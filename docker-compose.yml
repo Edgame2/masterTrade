@@ -1,0 +1,276 @@
+services:
+  # Message Queue
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: mastertrade_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./rabbitmq/definitions.json:/opt/definitions.json:ro
+      - ./rabbitmq/rabbitmq.config:/etc/rabbitmq/rabbitmq.config:ro
+    networks:
+      - mastertrade_network
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # Market Data Service
+  market_data_service:
+    build:
+      context: ./market_data_service
+      dockerfile: Dockerfile
+    container_name: mastertrade_market_data
+    environment:
+      # PostgreSQL Configuration (connecting to host machine)
+      - POSTGRES_HOST=host.docker.internal
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-mastertrade}
+      - POSTGRES_USER=${POSTGRES_USER:-mastertrade}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mastertrade}
+      - POSTGRES_APPLICATION_NAME=market_data_service
+      - RABBITMQ_URL=amqp://admin:password123@rabbitmq:5672/
+      - LOG_LEVEL=INFO
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - mastertrade_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Data Access API Service
+  data_access_api:
+    build:
+      context: ./market_data_service
+      dockerfile: Dockerfile
+    container_name: mastertrade_data_api
+    command: ["python", "data_access_api.py"]
+    environment:
+      # PostgreSQL Configuration (connecting to host machine)
+      - POSTGRES_HOST=host.docker.internal
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-mastertrade}
+      - POSTGRES_USER=${POSTGRES_USER:-mastertrade}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mastertrade}
+      - POSTGRES_APPLICATION_NAME=data_access_api
+      - LOG_LEVEL=INFO
+    ports:
+      - "8005:8005"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - mastertrade_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8005/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Strategy Service
+  strategy_service:
+    build:
+      context: ./strategy_service
+      dockerfile: Dockerfile
+    container_name: mastertrade_strategy
+    environment:
+      # PostgreSQL Configuration (connecting to host machine)
+      - POSTGRES_HOST=host.docker.internal
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-mastertrade}
+      - POSTGRES_USER=${POSTGRES_USER:-mastertrade}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mastertrade}
+      - POSTGRES_APPLICATION_NAME=strategy_service
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      - LOG_LEVEL=INFO
+      - PROMETHEUS_PORT=8001
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    networks:
+      - mastertrade_network
+    restart: unless-stopped
+
+  # Order Executor Service
+  order_executor:
+    build:
+      context: ./order_executor
+      dockerfile: Dockerfile
+    container_name: mastertrade_order_executor
+    environment:
+      # PostgreSQL Configuration (connecting to host machine)
+      - POSTGRES_HOST=host.docker.internal
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-mastertrade}
+      - POSTGRES_USER=${POSTGRES_USER:-mastertrade}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mastertrade}
+      - POSTGRES_APPLICATION_NAME=order_executor
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET}
+      - LOG_LEVEL=INFO
+      - PROMETHEUS_PORT=8002
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "8002:8002"
+    networks:
+      - mastertrade_network
+    restart: unless-stopped
+
+  # Risk Manager Service
+  risk_manager:
+    build:
+      context: ./risk_manager
+      dockerfile: Dockerfile
+    container_name: mastertrade_risk_manager
+    environment:
+      # PostgreSQL Configuration (connecting to host machine)
+      - POSTGRES_HOST=host.docker.internal
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-mastertrade}
+      - POSTGRES_USER=${POSTGRES_USER:-mastertrade}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mastertrade}
+      - POSTGRES_APPLICATION_NAME=risk_manager
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      - LOG_LEVEL=INFO
+      - PROMETHEUS_PORT=8003
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "8003:8003"
+    networks:
+      - mastertrade_network
+    restart: unless-stopped
+
+  # Monitoring UI
+  monitoring_ui:
+    build:
+      context: ./monitoring_ui
+      dockerfile: Dockerfile
+    container_name: mastertrade_monitoring_ui
+    environment:
+      - REACT_APP_API_URL=http://localhost:8080
+      - REACT_APP_WS_URL=ws://localhost:8080/ws
+    ports:
+      - "3000:80"
+    depends_on:
+      - api_gateway
+    networks:
+      - mastertrade_network
+    restart: unless-stopped
+
+  # Arbitrage Service
+  arbitrage_service:
+    build:
+      context: ./arbitrage_service
+      dockerfile: Dockerfile
+    container_name: mastertrade_arbitrage
+    environment:
+      # PostgreSQL Configuration (connecting to host machine)
+      - POSTGRES_HOST=host.docker.internal
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-mastertrade}
+      - POSTGRES_USER=${POSTGRES_USER:-mastertrade}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mastertrade}
+      - POSTGRES_APPLICATION_NAME=arbitrage_service
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET}
+      - LOG_LEVEL=INFO
+      - PROMETHEUS_PORT=8004
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "8004:8004"
+    networks:
+      - mastertrade_network
+    restart: unless-stopped
+
+  # API Gateway
+  api_gateway:
+    build:
+      context: ./api_gateway
+      dockerfile: Dockerfile
+    container_name: mastertrade_api_gateway
+    environment:
+      # PostgreSQL Configuration (connecting to host machine)
+      - POSTGRES_HOST=host.docker.internal
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-mastertrade}
+      - POSTGRES_USER=${POSTGRES_USER:-mastertrade}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mastertrade}
+      - POSTGRES_APPLICATION_NAME=api_gateway
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      - JWT_SECRET=${JWT_SECRET}
+      - LOG_LEVEL=INFO
+    ports:
+      - "8080:8080"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - mastertrade_network
+    restart: unless-stopped
+
+  # Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mastertrade_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - mastertrade_network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mastertrade_grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - prometheus
+    networks:
+      - mastertrade_network
+
+volumes:
+  rabbitmq_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  mastertrade_network:
+    driver: bridge

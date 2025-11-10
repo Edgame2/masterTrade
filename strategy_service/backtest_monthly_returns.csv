@@ -1,0 +1,201 @@
+Strategy ID,Strategy Name,Type,2025-08,2025-09,2025-10,2025-11,Avg Monthly %
+hybrid_803_2,Hybrid 803 - VOLUME+BB+MACD,hybrid,16.35,66.12,83.04,32.27,49.45
+macd_732_21,MACD 732 - 8/21/9,macd,9.16,56.26,93.05,39.28,49.44
+breakout_375_84,Breakout 375 - 15m 100p,breakout,32.96,56.43,66.55,22.21,44.54
+macd_798_87,MACD 798 - 8/21/9,macd,17.1,56.86,66.91,37.15,44.5
+hybrid_884_83,Hybrid 884 - MACD+BB+ATR,hybrid,33.87,61.4,62.77,16.16,43.55
+momentum_26_25,Momentum Strategy 26 - 15m 14p,momentum,31.06,51.94,63.56,19.21,41.44
+hybrid_893_92,Hybrid 893 - MACD+VOLUME+EMA,hybrid,28.93,73.73,34.06,27.98,41.17
+macd_782_71,MACD 782 - 8/30/7,macd,18.97,48.02,60.43,34.09,40.38
+momentum_119_118,Momentum Strategy 119 - 15m 30p,momentum,32.72,65.33,46.79,16.42,40.31
+volume_600_79,Volume Strategy 600 - 15m,volume_based,29.32,56.2,62.14,9.32,39.25
+breakout_329_38,Breakout 329 - 15m 100p,breakout,19.03,51.84,77.49,7.73,39.02
+hybrid_828_27,Hybrid 828 - RSI+MACD+VOLUME,hybrid,13.37,47.49,65.72,27.08,38.42
+macd_761_50,MACD 761 - 8/30/9,macd,12.06,50.03,57.12,23.45,35.67
+breakout_346_55,Breakout 346 - 15m 20p,breakout,24.57,56.72,42.81,18.48,35.65
+breakout_377_86,Breakout 377 - 15m 50p,breakout,29.63,51.72,36.12,23.88,35.34
+macd_731_20,MACD 731 - 12/30/11,macd,31.19,27.08,60.92,21.47,35.17
+momentum_131_130,Momentum Strategy 131 - 15m 50p,momentum,22.2,54.75,45.76,14.7,34.35
+macd_730_19,MACD 730 - 15/30/11,macd,10.53,49.97,47.78,28.29,34.14
+macd_719_8,MACD 719 - 15/30/7,macd,12.36,60.05,34.28,26.1,33.19
+hybrid_848_47,Hybrid 848 - EMA+VOLUME+RSI,hybrid,5.93,48.21,47.08,30.21,32.86
+volume_530_9,Volume Strategy 530 - 15m,volume_based,25.38,42.64,49.64,13.73,32.85
+macd_749_38,MACD 749 - 15/26/7,macd,4.65,58.8,40.48,22.72,31.66
+btc_corr_514_103,BTC Correlation 514 - Negative,btc_correlation,4.31,39.91,55.03,27.25,31.62
+hybrid_856_55,Hybrid 856 - ATR+EMA+RSI,hybrid,10.98,59.06,36.98,16.74,30.94
+hybrid_871_70,Hybrid 871 - MACD+ATR+RSI,hybrid,6.56,50.77,40.86,23.8,30.5
+hybrid_876_75,Hybrid 876 - RSI+MACD+BB,hybrid,11.53,35.9,49.72,22.27,29.86
+volume_547_26,Volume Strategy 547 - 1h,volume_based,-5.08,77.26,16.68,29.72,29.65
+momentum_127_126,Momentum Strategy 127 - 1h 50p,momentum,-0.34,40.14,71.64,6.74,29.55
+btc_corr_423_12,BTC Correlation 423 - Stable,btc_correlation,2.49,43.04,43.71,27.42,29.17
+momentum_25_24,Momentum Strategy 25 - 1h 10p,momentum,4.78,68.84,28.69,12.04,28.58
+momentum_120_119,Momentum Strategy 120 - 1h 30p,momentum,25.77,11.51,66.31,10.7,28.57
+volume_586_65,Volume Strategy 586 - 15m,volume_based,16.4,46.1,39.39,12.35,28.56
+momentum_16_15,Momentum Strategy 16 - 15m 20p,momentum,19.41,39.04,41.86,11.2,27.88
+macd_754_43,MACD 754 - 8/30/9,macd,8.28,38.31,45.64,16.55,27.19
+btc_corr_480_69,BTC Correlation 480 - Negative,btc_correlation,11.61,35.38,52.53,7.45,26.74
+macd_714_3,MACD 714 - 8/26/11,macd,25.48,20.53,48.54,11.09,26.41
+macd_788_77,MACD 788 - 8/30/7,macd,12.98,34.5,35.93,21.87,26.32
+breakout_394_103,Breakout 394 - 1h 100p,breakout,11.31,21.09,57.32,15.45,26.29
+momentum_54_53,Momentum Strategy 54 - 15m 10p,momentum,21.76,35.51,39.47,8.09,26.21
+momentum_102_101,Momentum Strategy 102 - 15m 50p,momentum,24.73,25.68,42.15,11.9,26.11
+macd_713_2,MACD 713 - 15/21/9,macd,7.72,33.68,43.94,18.43,25.94
+momentum_75_74,Momentum Strategy 75 - 1h 14p,momentum,4.38,48.03,34.44,16.88,25.93
+momentum_113_112,Momentum Strategy 113 - 1h 14p,momentum,6.23,28.39,43.93,24.52,25.76
+hybrid_860_59,Hybrid 860 - BB+RSI+VOLUME,hybrid,9.67,34.27,41.09,17.82,25.71
+breakout_307_16,Breakout 307 - 1h 50p,breakout,8.34,46.34,35.94,11.7,25.58
+breakout_350_59,Breakout 350 - 1h 10p,breakout,16.47,25.73,50.63,6.44,24.82
+btc_corr_463_52,BTC Correlation 463 - Negative,btc_correlation,8.92,29.29,35.02,24.53,24.44
+breakout_327_36,Breakout 327 - 1h 50p,breakout,1.87,33.68,31.26,30.05,24.22
+momentum_38_37,Momentum Strategy 38 - 1h 14p,momentum,21.6,11.27,55.28,8.01,24.04
+hybrid_888_87,Hybrid 888 - RSI+ATR+BB,hybrid,10.35,27.77,36.33,20.51,23.74
+breakout_332_41,Breakout 332 - 1h 20p,breakout,17.89,24.14,25.37,26.02,23.36
+hybrid_827_26,Hybrid 827 - VOLUME+EMA+RSI,hybrid,6.34,37.04,30.42,18.78,23.14
+btc_corr_472_61,BTC Correlation 472 - Stable,btc_correlation,12.4,28.88,36.02,14.28,22.89
+momentum_34_33,Momentum Strategy 34 - 1h 50p,momentum,0.14,60.71,8.47,21.18,22.62
+momentum_57_56,Momentum Strategy 57 - 1h 30p,momentum,16.4,10.07,52.98,9.78,22.31
+volume_615_94,Volume Strategy 615 - 1h,volume_based,12.53,31.15,29.2,16.12,22.25
+volume_521_0,Volume Strategy 521 - 1h,volume_based,5.65,21.42,46.42,14.57,22.01
+volume_551_30,Volume Strategy 551 - 1h,volume_based,1.46,52.32,27.42,6.04,21.81
+volume_581_60,Volume Strategy 581 - 1h,volume_based,1.27,41.37,14.18,30.3,21.78
+momentum_28_27,Momentum Strategy 28 - 1h 50p,momentum,-1.42,33.5,49.6,4.76,21.61
+breakout_303_12,Breakout 303 - 1h 30p,breakout,2.11,20.25,41.46,21.84,21.41
+momentum_17_16,Momentum Strategy 17 - 1h 20p,momentum,-5.07,38.18,27.19,25.16,21.36
+macd_753_42,MACD 753 - 12/26/11,macd,12.38,23.67,29.57,17.5,20.78
+volume_588_67,Volume Strategy 588 - 1h,volume_based,2.89,18.62,54.48,6.92,20.73
+btc_corr_475_64,BTC Correlation 475 - Divergence,btc_correlation,12.96,30.96,18.05,20.21,20.55
+momentum_42_41,Momentum Strategy 42 - 1h 10p,momentum,4.12,42.07,18.82,16.93,20.48
+hybrid_862_61,Hybrid 862 - MACD+EMA+RSI,hybrid,8.44,28.0,31.16,14.3,20.47
+momentum_21_20,Momentum Strategy 21 - 1h 14p,momentum,12.32,24.17,28.46,15.37,20.08
+btc_corr_496_85,BTC Correlation 496 - Stable,btc_correlation,2.12,27.56,37.59,12.19,19.86
+btc_corr_438_27,BTC Correlation 438 - Divergence,btc_correlation,11.62,31.34,15.64,19.94,19.63
+breakout_407_116,Breakout 407 - 1h 20p,breakout,11.0,14.03,43.11,10.25,19.59
+momentum_94_93,Momentum Strategy 94 - 1h 20p,momentum,4.63,34.41,26.08,13.12,19.56
+macd_776_65,MACD 776 - 15/21/9,macd,4.32,43.98,12.92,16.91,19.53
+volume_558_37,Volume Strategy 558 - 1h,volume_based,4.86,39.92,24.48,6.76,19.01
+momentum_90_89,Momentum Strategy 90 - 1h 10p,momentum,6.83,36.15,22.0,10.92,18.98
+momentum_121_120,Momentum Strategy 121 - 15m 14p,momentum,11.2,30.47,24.1,9.15,18.73
+momentum_108_107,Momentum Strategy 108 - 1h 50p,momentum,5.87,35.68,15.57,16.96,18.52
+macd_734_23,MACD 734 - 8/30/7,macd,11.7,20.31,25.82,15.94,18.44
+breakout_388_97,Breakout 388 - 1h 20p,breakout,19.17,27.71,17.67,9.0,18.39
+btc_corr_421_10,BTC Correlation 421 - Stable,btc_correlation,14.49,16.68,24.92,16.68,18.19
+volume_609_88,Volume Strategy 609 - 1h,volume_based,-0.69,43.47,24.44,4.92,18.04
+breakout_324_33,Breakout 324 - 1h 100p,breakout,6.89,16.21,38.42,10.12,17.91
+hybrid_834_33,Hybrid 834 - EMA+MACD+VOLUME,hybrid,12.04,22.26,24.64,12.18,17.78
+macd_715_4,MACD 715 - 12/21/11,macd,8.53,21.95,29.15,11.21,17.71
+breakout_360_69,Breakout 360 - 1h 20p,breakout,-0.1,24.34,44.28,2.16,17.67
+hybrid_805_4,Hybrid 805 - BB+RSI+EMA,hybrid,2.25,28.21,22.04,17.23,17.43
+breakout_384_93,Breakout 384 - 1h 20p,breakout,8.13,11.99,31.07,16.04,16.8
+hybrid_812_11,Hybrid 812 - RSI+EMA+MACD,hybrid,11.05,18.01,26.46,11.28,16.7
+momentum_45_44,Momentum Strategy 45 - 1h 50p,momentum,0.16,36.13,21.46,8.41,16.54
+momentum_77_76,Momentum Strategy 77 - 1h 20p,momentum,0.86,30.19,22.61,11.64,16.32
+momentum_23_22,Momentum Strategy 23 - 1h 30p,momentum,4.63,23.31,18.84,17.71,16.12
+volume_603_82,Volume Strategy 603 - 1h,volume_based,-1.61,41.19,22.56,2.17,16.08
+breakout_398_107,Breakout 398 - 1h 10p,breakout,11.13,18.54,19.61,14.97,16.06
+volume_606_85,Volume Strategy 606 - 1h,volume_based,-5.55,43.72,15.63,10.26,16.02
+macd_733_22,MACD 733 - 8/26/9,macd,9.2,21.3,22.76,10.54,15.95
+momentum_63_62,Momentum Strategy 63 - 1h 14p,momentum,-0.39,39.38,11.13,12.95,15.76
+volume_604_83,Volume Strategy 604 - 1h,volume_based,2.4,36.17,12.69,10.99,15.56
+momentum_101_100,Momentum Strategy 101 - 1h 30p,momentum,7.31,14.44,30.93,8.68,15.34
+btc_corr_504_93,BTC Correlation 504 - Divergence,btc_correlation,9.2,21.59,21.99,8.37,15.29
+breakout_386_95,Breakout 386 - 1h 10p,breakout,9.17,7.31,32.74,11.72,15.24
+momentum_58_57,Momentum Strategy 58 - 1h 30p,momentum,1.33,20.81,21.31,17.32,15.19
+volume_596_75,Volume Strategy 596 - 1h,volume_based,4.46,30.09,8.91,17.1,15.14
+breakout_367_76,Breakout 367 - 1h 50p,breakout,1.66,23.05,23.35,10.64,14.67
+breakout_392_101,Breakout 392 - 1h 30p,breakout,6.39,8.34,25.47,17.64,14.46
+momentum_115_114,Momentum Strategy 115 - 1h 14p,momentum,1.73,18.88,24.8,11.45,14.22
+momentum_148_147,Momentum Strategy 148 - 1h 10p,momentum,3.76,22.26,17.07,13.61,14.18
+volume_602_81,Volume Strategy 602 - 1h,volume_based,0.3,29.36,11.23,15.61,14.12
+momentum_81_80,Momentum Strategy 81 - 1h 50p,momentum,2.39,21.97,18.58,10.48,13.35
+btc_corr_489_78,BTC Correlation 489 - Positive,btc_correlation,2.68,20.53,19.77,9.8,13.2
+volume_533_12,Volume Strategy 533 - 1h,volume_based,2.37,28.14,8.65,12.66,12.95
+volume_597_76,Volume Strategy 597 - 1h,volume_based,11.31,21.29,15.99,2.89,12.87
+btc_corr_457_46,BTC Correlation 457 - Divergence,btc_correlation,2.46,16.89,18.19,13.44,12.74
+btc_corr_450_39,BTC Correlation 450 - Positive,btc_correlation,5.34,14.79,23.08,7.46,12.67
+hybrid_809_8,Hybrid 809 - RSI+MACD+EMA,hybrid,6.07,15.77,17.65,11.09,12.65
+breakout_378_87,Breakout 378 - 1h 100p,breakout,-0.51,19.66,28.51,2.29,12.49
+volume_594_73,Volume Strategy 594 - 1h,volume_based,7.67,9.37,26.94,4.29,12.07
+momentum_36_35,Momentum Strategy 36 - 1h 20p,momentum,9.4,10.3,23.25,4.76,11.93
+macd_789_78,MACD 789 - 15/30/11,macd,-10.27,15.56,21.77,20.57,11.91
+volume_560_39,Volume Strategy 560 - 1h,volume_based,-1.46,30.58,4.01,14.35,11.87
+breakout_397_106,Breakout 397 - 1h 30p,breakout,8.19,3.93,17.8,16.32,11.56
+hybrid_854_53,Hybrid 854 - EMA+MACD+ATR,hybrid,2.99,17.72,15.74,9.23,11.42
+momentum_88_87,Momentum Strategy 88 - 1h 10p,momentum,1.42,17.56,12.23,14.29,11.38
+volume_532_11,Volume Strategy 532 - 1h,volume_based,8.48,5.16,26.78,4.9,11.33
+btc_corr_492_81,BTC Correlation 492 - Divergence,btc_correlation,6.56,14.02,21.54,2.67,11.2
+momentum_106_105,Momentum Strategy 106 - 1h 10p,momentum,0.41,20.99,11.44,11.79,11.16
+momentum_122_121,Momentum Strategy 122 - 1h 14p,momentum,5.83,17.23,11.11,10.35,11.13
+momentum_117_116,Momentum Strategy 117 - 1h 50p,momentum,1.4,18.63,19.05,5.35,11.11
+breakout_330_39,Breakout 330 - 1h 20p,breakout,-1.7,22.68,21.4,1.99,11.09
+momentum_18_17,Momentum Strategy 18 - 1h 14p,momentum,1.45,20.45,13.95,8.18,11.01
+breakout_395_104,Breakout 395 - 1h 50p,breakout,6.02,5.29,31.02,1.29,10.9
+macd_764_53,MACD 764 - 12/26/7,macd,-11.37,11.09,22.57,21.06,10.84
+breakout_347_56,Breakout 347 - 1h 20p,breakout,4.67,11.56,16.41,10.18,10.7
+momentum_86_85,Momentum Strategy 86 - 1h 10p,momentum,4.22,19.3,9.76,9.21,10.62
+volume_541_20,Volume Strategy 541 - 1h,volume_based,7.92,6.57,13.14,14.67,10.58
+momentum_92_91,Momentum Strategy 92 - 1h 50p,momentum,6.77,8.3,16.44,10.64,10.54
+btc_corr_411_0,BTC Correlation 411 - Stable,btc_correlation,0.79,18.45,13.55,9.1,10.47
+volume_616_95,Volume Strategy 616 - 1h,volume_based,2.78,11.19,16.42,10.6,10.25
+btc_corr_445_34,BTC Correlation 445 - Stable,btc_correlation,5.18,12.12,17.2,5.67,10.04
+volume_578_57,Volume Strategy 578 - 1h,volume_based,1.43,16.37,7.34,15.01,10.04
+btc_corr_439_28,BTC Correlation 439 - Negative,btc_correlation,-2.1,1.93,16.65,23.05,9.88
+macd_793_82,MACD 793 - 12/21/11,macd,-9.36,10.43,16.2,22.13,9.85
+volume_613_92,Volume Strategy 613 - 1h,volume_based,0.93,17.75,9.54,10.57,9.7
+momentum_48_47,Momentum Strategy 48 - 1h 50p,momentum,3.48,16.69,9.85,8.55,9.64
+btc_corr_414_3,BTC Correlation 414 - Divergence,btc_correlation,1.41,15.65,9.93,11.03,9.51
+breakout_317_26,Breakout 317 - 1h 50p,breakout,-1.69,17.6,14.41,7.28,9.4
+volume_523_2,Volume Strategy 523 - 1h,volume_based,-2.99,19.74,18.34,2.47,9.39
+volume_608_87,Volume Strategy 608 - 1h,volume_based,1.64,13.93,11.04,10.72,9.33
+breakout_408_117,Breakout 408 - 1h 30p,breakout,6.85,8.39,11.07,10.33,9.16
+breakout_301_10,Breakout 301 - 1h 30p,breakout,9.87,5.12,16.96,3.65,8.9
+hybrid_899_98,Hybrid 899 - VOLUME+MACD+RSI,hybrid,-7.41,16.24,9.45,16.62,8.73
+momentum_126_125,Momentum Strategy 126 - 1h 30p,momentum,1.0,15.3,15.94,1.38,8.41
+hybrid_801_0,Hybrid 801 - EMA+MACD+BB,hybrid,-10.17,14.79,12.04,16.91,8.39
+btc_corr_478_67,BTC Correlation 478 - Stable,btc_correlation,3.52,11.39,11.47,7.0,8.34
+hybrid_877_76,Hybrid 877 - VOLUME+EMA+ATR,hybrid,-9.43,13.04,12.09,17.31,8.25
+macd_790_79,MACD 790 - 15/26/7,macd,-12.77,19.5,6.46,19.55,8.18
+volume_526_5,Volume Strategy 526 - 1h,volume_based,6.55,12.85,1.67,10.8,7.97
+breakout_306_15,Breakout 306 - 1h 50p,breakout,2.16,10.89,10.4,7.71,7.79
+momentum_100_99,Momentum Strategy 100 - 1h 50p,momentum,6.9,5.15,9.99,8.96,7.75
+btc_corr_413_2,BTC Correlation 413 - Positive,btc_correlation,-6.24,4.18,26.37,6.35,7.66
+breakout_305_14,Breakout 305 - 1h 50p,breakout,4.1,17.79,6.5,2.02,7.6
+btc_corr_513_102,BTC Correlation 513 - Divergence,btc_correlation,2.14,10.2,14.08,3.9,7.58
+macd_748_37,MACD 748 - 12/21/9,macd,-5.6,5.33,6.91,23.23,7.47
+momentum_3_2,Momentum Strategy 3 - 4h 50p,momentum,-16.38,30.09,11.84,4.05,7.4
+btc_corr_454_43,BTC Correlation 454 - Positive,btc_correlation,-7.45,6.28,20.38,10.22,7.36
+btc_corr_515_104,BTC Correlation 515 - Stable,btc_correlation,-13.17,26.31,3.83,11.93,7.22
+volume_565_44,Volume Strategy 565 - 1h,volume_based,6.43,3.36,10.65,7.73,7.04
+volume_620_99,Volume Strategy 620 - 1h,volume_based,-1.14,18.84,8.51,1.92,7.03
+momentum_105_104,Momentum Strategy 105 - 1h 50p,momentum,3.8,10.77,8.74,4.05,6.84
+btc_corr_424_13,BTC Correlation 424 - Divergence,btc_correlation,-13.67,23.08,-3.83,21.07,6.66
+breakout_320_29,Breakout 320 - 4h 100p,breakout,-5.66,8.52,4.99,17.61,6.37
+btc_corr_447_36,BTC Correlation 447 - Positive,btc_correlation,2.19,5.29,1.44,16.43,6.34
+momentum_79_78,Momentum Strategy 79 - 4h 20p,momentum,-9.79,12.5,19.8,2.64,6.29
+volume_599_78,Volume Strategy 599 - 1h,volume_based,4.08,11.57,0.97,7.69,6.08
+btc_corr_425_14,BTC Correlation 425 - Stable,btc_correlation,-6.32,8.61,2.62,19.21,6.03
+btc_corr_484_73,BTC Correlation 484 - Negative,btc_correlation,-6.79,8.6,7.91,14.15,5.97
+hybrid_840_39,Hybrid 840 - ATR+MACD+EMA,hybrid,-5.17,9.51,11.07,8.38,5.95
+macd_721_10,MACD 721 - 12/21/9,macd,-5.82,6.73,8.88,13.91,5.92
+breakout_361_70,Breakout 361 - 1h 30p,breakout,3.03,10.7,3.72,5.91,5.84
+btc_corr_516_105,BTC Correlation 516 - Positive,btc_correlation,-7.63,20.39,-2.88,13.4,5.82
+momentum_129_128,Momentum Strategy 129 - 4h 14p,momentum,-9.45,16.16,15.2,1.1,5.75
+macd_796_85,MACD 796 - 8/30/11,macd,-10.13,11.95,7.09,14.04,5.74
+momentum_67_66,Momentum Strategy 67 - 4h 10p,momentum,-10.39,18.45,-3.8,18.65,5.73
+breakout_323_32,Breakout 323 - 1h 50p,breakout,0.34,10.44,9.62,1.52,5.48
+breakout_356_65,Breakout 356 - 1h 50p,breakout,1.66,11.01,5.7,3.51,5.47
+breakout_371_80,Breakout 371 - 1h 10p,breakout,-3.09,14.01,8.6,2.27,5.45
+btc_corr_436_25,BTC Correlation 436 - Positive,btc_correlation,-3.98,4.56,9.96,10.6,5.29
+swing_969_18,Swing 969 - 4h Trend,swing,6.06,-8.34,0.95,22.14,5.2
+btc_corr_431_20,BTC Correlation 431 - Stable,btc_correlation,-5.21,2.23,15.97,7.18,5.04
+btc_corr_444_33,BTC Correlation 444 - Positive,btc_correlation,-8.89,9.72,3.91,15.19,4.98
+btc_corr_477_66,BTC Correlation 477 - Divergence,btc_correlation,-7.38,9.07,10.97,7.03,4.92
+hybrid_824_23,Hybrid 824 - VOLUME+ATR+MACD,hybrid,-9.78,6.09,10.83,12.46,4.9
+btc_corr_483_72,BTC Correlation 483 - Divergence,btc_correlation,-1.43,10.45,0.48,9.73,4.81
+hybrid_866_65,Hybrid 866 - RSI+VOLUME+BB,hybrid,-7.82,13.27,0.97,12.76,4.8
+breakout_343_52,Breakout 343 - 1h 100p,breakout,0.39,10.82,4.32,2.95,4.62
+btc_corr_500_89,BTC Correlation 500 - Stable,btc_correlation,-5.7,6.88,6.66,10.65,4.62
+momentum_91_90,Momentum Strategy 91 - 4h 10p,momentum,0.32,-10.01,23.33,4.78,4.6
+macd_743_32,MACD 743 - 12/21/9,macd,-8.98,3.04,7.77,15.99,4.46
+hybrid_881_80,Hybrid 881 - MACD+VOLUME+EMA,hybrid,-1.62,7.09,4.04,7.94,4.36
+momentum_146_145,Momentum Strategy 146 - 4h 30p,momentum,-7.54,4.28,10.64,10.03,4.35
+momentum_6_5,Momentum Strategy 6 - 4h 50p,momentum,3.82,7.36,-4.97,11.14,4.34

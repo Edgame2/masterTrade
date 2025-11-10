@@ -1,0 +1,328 @@
+{
+    "rabbit_version": "3.12.0",
+    "rabbitmq_version": "3.12.0",
+    "product_name": "RabbitMQ",
+    "product_version": "3.12.0",
+    "users": [
+        {
+            "name": "mastertrade",
+            "password_hash": "",
+            "hashing_algorithm": "rabbit_password_hashing_sha256",
+            "tags": "administrator",
+            "limits": {}
+        }
+    ],
+    "vhosts": [
+        {
+            "name": "/"
+        }
+    ],
+    "permissions": [
+        {
+            "user": "mastertrade",
+            "vhost": "/",
+            "configure": ".*",
+            "write": ".*",
+            "read": ".*"
+        }
+    ],
+    "topic_permissions": [],
+    "parameters": [],
+    "global_parameters": [
+        {
+            "name": "internal_cluster_id",
+            "value": "rabbitmq-cluster-id-mastertrade"
+        }
+    ],
+    "policies": [],
+    "queues": [
+        {
+            "name": "market_data",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {
+                "x-message-ttl": 3600000,
+                "x-max-length": 10000
+            }
+        },
+        {
+            "name": "sentiment_data",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {
+                "x-message-ttl": 7200000,
+                "x-max-length": 5000
+            }
+        },
+        {
+            "name": "stock_index_data",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {
+                "x-message-ttl": 86400000,
+                "x-max-length": 1000
+            }
+        },
+        {
+            "name": "correlation_data",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {
+                "x-message-ttl": 86400000,
+                "x-max-length": 1000
+            }
+        },
+        {
+            "name": "ticker_updates",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {
+                "x-message-ttl": 1800000,
+                "x-max-length": 20000
+            }
+        },
+        {
+            "name": "orderbook_updates",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {
+                "x-message-ttl": 300000,
+                "x-max-length": 50000
+            }
+        },
+        {
+            "name": "trade_updates",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {
+                "x-message-ttl": 1800000,
+                "x-max-length": 30000
+            }
+        },
+        {
+            "name": "strategy_market_data",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {
+                "x-message-ttl": 3600000,
+                "x-max-length": 15000
+            }
+        },
+        {
+            "name": "executor_market_data",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {
+                "x-message-ttl": 3600000,
+                "x-max-length": 15000
+            }
+        },
+        {
+            "name": "trading_signals",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {
+                "x-message-ttl": 1800000
+            }
+        },
+        {
+            "name": "order_requests",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {}
+        },
+        {
+            "name": "order_updates",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {}
+        },
+        {
+            "name": "risk_checks",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {}
+        },
+        {
+            "name": "system_notifications",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {}
+        }
+    ],
+    "exchanges": [
+        {
+            "name": "mastertrade.market",
+            "vhost": "/",
+            "type": "topic",
+            "durable": true,
+            "auto_delete": false,
+            "internal": false,
+            "arguments": {}
+        },
+        {
+            "name": "mastertrade.trading",
+            "vhost": "/",
+            "type": "topic",
+            "durable": true,
+            "auto_delete": false,
+            "internal": false,
+            "arguments": {}
+        },
+        {
+            "name": "mastertrade.orders",
+            "vhost": "/",
+            "type": "topic",
+            "durable": true,
+            "auto_delete": false,
+            "internal": false,
+            "arguments": {}
+        },
+        {
+            "name": "mastertrade.risk",
+            "vhost": "/",
+            "type": "topic",
+            "durable": true,
+            "auto_delete": false,
+            "internal": false,
+            "arguments": {}
+        },
+        {
+            "name": "mastertrade.system",
+            "vhost": "/",
+            "type": "topic",
+            "durable": true,
+            "auto_delete": false,
+            "internal": false,
+            "arguments": {}
+        }
+    ],
+    "bindings": [
+        {
+            "source": "mastertrade.market",
+            "vhost": "/",
+            "destination": "market_data",
+            "destination_type": "queue",
+            "routing_key": "market.data.*",
+            "arguments": {}
+        },
+        {
+            "source": "mastertrade.market",
+            "vhost": "/",
+            "destination": "sentiment_data",
+            "destination_type": "queue",
+            "routing_key": "sentiment.*",
+            "arguments": {}
+        },
+        {
+            "source": "mastertrade.market",
+            "vhost": "/",
+            "destination": "stock_index_data",
+            "destination_type": "queue",
+            "routing_key": "stock.*",
+            "arguments": {}
+        },
+        {
+            "source": "mastertrade.market",
+            "vhost": "/",
+            "destination": "correlation_data",
+            "destination_type": "queue",
+            "routing_key": "correlation.*",
+            "arguments": {}
+        },
+        {
+            "source": "mastertrade.market",
+            "vhost": "/",
+            "destination": "ticker_updates",
+            "destination_type": "queue",
+            "routing_key": "ticker.*",
+            "arguments": {}
+        },
+        {
+            "source": "mastertrade.market",
+            "vhost": "/",
+            "destination": "orderbook_updates",
+            "destination_type": "queue",
+            "routing_key": "market.data.orderbook",
+            "arguments": {}
+        },
+        {
+            "source": "mastertrade.market",
+            "vhost": "/",
+            "destination": "trade_updates",
+            "destination_type": "queue",
+            "routing_key": "market.data.trade",
+            "arguments": {}
+        },
+        {
+            "source": "mastertrade.market",
+            "vhost": "/",
+            "destination": "strategy_market_data",
+            "destination_type": "queue",
+            "routing_key": "market.#",
+            "arguments": {}
+        },
+        {
+            "source": "mastertrade.market",
+            "vhost": "/",
+            "destination": "executor_market_data",
+            "destination_type": "queue",
+            "routing_key": "market.#",
+            "arguments": {}
+        },
+        {
+            "source": "mastertrade.trading",
+            "vhost": "/",
+            "destination": "trading_signals",
+            "destination_type": "queue",
+            "routing_key": "signal.*",
+            "arguments": {}
+        },
+        {
+            "source": "mastertrade.orders",
+            "vhost": "/",
+            "destination": "order_requests",
+            "destination_type": "queue",
+            "routing_key": "order.request",
+            "arguments": {}
+        },
+        {
+            "source": "mastertrade.orders",
+            "vhost": "/",
+            "destination": "order_updates",
+            "destination_type": "queue",
+            "routing_key": "order.update.*",
+            "arguments": {}
+        },
+        {
+            "source": "mastertrade.risk",
+            "vhost": "/",
+            "destination": "risk_checks",
+            "destination_type": "queue",
+            "routing_key": "risk.check",
+            "arguments": {}
+        },
+        {
+            "source": "mastertrade.system",
+            "vhost": "/",
+            "destination": "system_notifications",
+            "destination_type": "queue",
+            "routing_key": "system.*",
+            "arguments": {}
+        }
+    ]
+}

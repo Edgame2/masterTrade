@@ -1,0 +1,55 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # MasterTrade Services
+  - job_name: 'mastertrade-strategy-service'
+    static_configs:
+      - targets: ['strategy_service:8001']
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  - job_name: 'mastertrade-order-executor'
+    static_configs:
+      - targets: ['order_executor:8002']
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  - job_name: 'mastertrade-risk-manager'
+    static_configs:
+      - targets: ['risk_manager:8003']
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  - job_name: 'mastertrade-api-gateway'
+    static_configs:
+      - targets: ['api_gateway:8080']
+    metrics_path: /metrics
+    scrape_interval: 15s
+
+  # System metrics
+  - job_name: 'postgres-exporter'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+    scrape_interval: 30s
+
+  - job_name: 'rabbitmq-exporter'
+    static_configs:
+      - targets: ['rabbitmq:15692']
+    scrape_interval: 30s
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093

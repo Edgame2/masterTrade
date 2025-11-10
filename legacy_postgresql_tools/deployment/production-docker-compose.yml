@@ -1,0 +1,447 @@
+version: '3.8'
+
+services:
+  # Load Balancer
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+      - ./nginx/logs:/var/log/nginx
+    depends_on:
+      - api_gateway_1
+      - api_gateway_2
+    networks:
+      - frontend
+      - backend
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # API Gateway Cluster
+  api_gateway_1:
+    build: ./api_gateway
+    environment:
+      - NODE_ENV=production
+      - INSTANCE_ID=gateway_1
+      - DB_HOST=postgres_primary
+      - REDIS_URL=redis://redis_cluster:6379
+      - RABBITMQ_URL=amqp://rabbitmq_cluster:5672
+    volumes:
+      - ./logs/api_gateway_1:/app/logs
+    networks:
+      - backend
+    depends_on:
+      - postgres_primary
+      - redis_cluster
+      - rabbitmq_cluster
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  api_gateway_2:
+    build: ./api_gateway
+    environment:
+      - NODE_ENV=production
+      - INSTANCE_ID=gateway_2
+      - DB_HOST=postgres_primary
+      - REDIS_URL=redis://redis_cluster:6379
+      - RABBITMQ_URL=amqp://rabbitmq_cluster:5672
+    volumes:
+      - ./logs/api_gateway_2:/app/logs
+    networks:
+      - backend
+    depends_on:
+      - postgres_primary
+      - redis_cluster
+      - rabbitmq_cluster
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # Database Cluster
+  postgres_primary:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: mastertrade_prod
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICATION_USER}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD}
+    volumes:
+      - postgres_data_primary:/var/lib/postgresql/data
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf
+      - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    networks:
+      - backend
+    restart: unless-stopped
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+  postgres_replica:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: mastertrade_prod
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGUSER: ${POSTGRES_REPLICATION_USER}
+      POSTGRES_MASTER_SERVICE: postgres_primary
+    volumes:
+      - postgres_data_replica:/var/lib/postgresql/data
+      - ./postgres/recovery.conf:/etc/postgresql/recovery.conf
+    networks:
+      - backend
+    depends_on:
+      - postgres_primary
+    restart: unless-stopped
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis Cluster
+  redis_cluster:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./redis/redis.conf:/etc/redis/redis.conf
+    networks:
+      - backend
+    restart: unless-stopped
+    command: redis-server /etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 1G
+
+  # RabbitMQ Cluster
+  rabbitmq_cluster:
+    image: rabbitmq:3.12-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf
+      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Core Services
+  market_data_service:
+    build: ./market_data_service
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=postgres_primary
+      - DB_REPLICA_HOST=postgres_replica
+      - REDIS_URL=redis://redis_cluster:6379
+      - RABBITMQ_URL=amqp://rabbitmq_cluster:5672
+    volumes:
+      - ./logs/market_data:/app/logs
+      - market_data_cache:/app/cache
+    networks:
+      - backend
+    depends_on:
+      - postgres_primary
+      - redis_cluster
+      - rabbitmq_cluster
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2G
+        reservations:
+          cpus: '0.75'
+          memory: 1G
+
+  strategy_service:
+    build: ./strategy_service
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=postgres_primary
+      - REDIS_URL=redis://redis_cluster:6379
+      - RABBITMQ_URL=amqp://rabbitmq_cluster:5672
+    volumes:
+      - ./logs/strategy:/app/logs
+      - strategy_models:/app/models
+    networks:
+      - backend
+    depends_on:
+      - postgres_primary
+      - redis_cluster
+      - rabbitmq_cluster
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+  risk_manager:
+    build: ./risk_manager
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=postgres_primary
+      - REDIS_URL=redis://redis_cluster:6379
+      - RABBITMQ_URL=amqp://rabbitmq_cluster:5672
+    volumes:
+      - ./logs/risk_manager:/app/logs
+    networks:
+      - backend
+    depends_on:
+      - postgres_primary
+      - redis_cluster
+      - rabbitmq_cluster
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  order_executor:
+    build: ./order_executor
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=postgres_primary
+      - REDIS_URL=redis://redis_cluster:6379
+      - RABBITMQ_URL=amqp://rabbitmq_cluster:5672
+    volumes:
+      - ./logs/order_executor:/app/logs
+    networks:
+      - backend
+    depends_on:
+      - postgres_primary
+      - redis_cluster
+      - rabbitmq_cluster
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # Monitoring Stack
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules
+      - prometheus_data:/prometheus
+    networks:
+      - monitoring
+      - backend
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - monitoring
+      - frontend
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      - alertmanager_data:/alertmanager
+    networks:
+      - monitoring
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+
+  # Log Management
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.8.0
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g
+      - xpack.security.enabled=false
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - logging
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.8.0
+    volumes:
+      - ./logging/logstash/pipeline:/usr/share/logstash/pipeline
+      - ./logs:/usr/share/logstash/logs
+    networks:
+      - logging
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.8.0
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    networks:
+      - logging
+      - frontend
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+
+  # Security & Backup
+  vault:
+    image: vault:1.13
+    ports:
+      - "8200:8200"
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=${VAULT_ROOT_TOKEN}
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+    volumes:
+      - vault_data:/vault/data
+      - ./vault/config:/vault/config
+    networks:
+      - backend
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK
+
+  backup_service:
+    build: ./backup
+    environment:
+      - DB_HOST=postgres_primary
+      - S3_BUCKET=${BACKUP_S3_BUCKET}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    volumes:
+      - ./backups:/app/backups
+      - ./logs/backup:/app/logs
+    networks:
+      - backend
+    depends_on:
+      - postgres_primary
+    restart: unless-stopped
+
+volumes:
+  postgres_data_primary:
+  postgres_data_replica:
+  redis_data:
+  rabbitmq_data:
+  market_data_cache:
+  strategy_models:
+  prometheus_data:
+  grafana_data:
+  alertmanager_data:
+  elasticsearch_data:
+  vault_data:
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+  monitoring:
+    driver: bridge
+  logging:
+    driver: bridge

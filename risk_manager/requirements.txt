@@ -1,0 +1,44 @@
+# Risk Management Service Dependencies
+
+# Core framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Database
+asyncpg==0.29.0
+
+# Message Queue
+aio-pika==9.3.1
+
+# Data processing and analysis
+numpy==1.24.3
+pandas==2.1.4
+scipy==1.11.4
+
+# Logging
+structlog==23.2.0
+
+# Async utilities
+asyncio-mqtt==0.16.1
+
+# HTTP client
+aiohttp==3.9.1
+httpx==0.25.2
+
+# Configuration
+python-dotenv==1.0.0
+
+# Date/time utilities
+python-dateutil==2.8.2
+
+# Testing (development)
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-mock==3.12.0
+
+# Development utilities
+black==23.12.0
+isort==5.13.2
+mypy==1.7.1

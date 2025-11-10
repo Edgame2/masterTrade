@@ -1,0 +1,2 @@
+# Add market data consumer to strategy service requirements
+aiohttp==3.9.1
