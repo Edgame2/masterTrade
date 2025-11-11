@@ -64,10 +64,21 @@ class PositionSizingEngine:
     def __init__(
         self,
         database: RiskPostgresDatabase,
-        price_prediction_client: Optional[PricePredictionClient] = None
+        price_prediction_client: Optional[PricePredictionClient] = None,
+        enable_goal_sizing: bool = True
     ):
         self.database = database
         self.price_prediction_client = price_prediction_client
+        
+        # Initialize goal-oriented sizing module
+        self.goal_sizing_module = None
+        if enable_goal_sizing:
+            try:
+                from goal_oriented_sizing import GoalOrientedSizingModule
+                self.goal_sizing_module = GoalOrientedSizingModule(database)
+                logger.info("Goal-oriented sizing module enabled")
+            except Exception as e:
+                logger.warning(f"Failed to initialize goal-oriented sizing module: {e}")
         
     def set_price_prediction_client(self, client: Optional[PricePredictionClient]) -> None:
         """Attach or replace the price prediction client at runtime."""
@@ -139,9 +150,39 @@ class PositionSizingEngine:
                 market_adjusted_size, request
             )
             
+            # Apply goal-based adjustment (NEW)
+            goal_adjusted_size = portfolio_adjusted_size
+            if self.goal_sizing_module:
+                try:
+                    goals_data = await self.database.get_current_goal_progress()
+                    goal_factor = await self.goal_sizing_module.calculate_goal_adjustment_factor(
+                        current_portfolio_value=goals_data.get('portfolio_value', available_balance),
+                        monthly_return_progress=goals_data.get('monthly_return_progress', 0.0),
+                        monthly_income_progress=goals_data.get('monthly_income_progress', 0.0)
+                    )
+                    goal_adjusted_size = portfolio_adjusted_size * goal_factor
+                    
+                    # Log the adjustment
+                    await self.goal_sizing_module.log_adjustment_decision(
+                        portfolio_value=goals_data.get('portfolio_value', available_balance),
+                        adjustment_factor=goal_factor,
+                        reason=f"Position sizing for {request.symbol} adjusted by goal progress"
+                    )
+                    
+                    logger.info(
+                        "Applied goal-based position adjustment",
+                        symbol=request.symbol,
+                        original_size=portfolio_adjusted_size,
+                        adjusted_size=goal_adjusted_size,
+                        goal_factor=goal_factor
+                    )
+                except Exception as e:
+                    logger.error(f"Error applying goal-based adjustment: {e}")
+                    goal_adjusted_size = portfolio_adjusted_size
+            
             # Apply asset class limits
             final_size = await self._apply_asset_class_limits(
-                portfolio_adjusted_size, request.symbol, available_balance
+                goal_adjusted_size, request.symbol, available_balance
             )
             
             # Calculate quantity and stop-loss

@@ -15,9 +15,21 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Any, List
 import structlog
+import aio_pika
 
 from database import Database
 from collectors.social_collector import SocialCollector
+
+# Import message schemas
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+from shared.message_schemas import (
+    SocialSentimentUpdate,
+    TrendDirection,
+    serialize_message,
+    RoutingKeys
+)
 
 logger = structlog.get_logger()
 
@@ -46,7 +58,8 @@ class LunarCrushCollector(SocialCollector):
         database: Database,
         api_key: str,
         rate_limit: float = 0.2,  # LunarCrush allows ~300/day, we use conservative limit
-        use_finbert: bool = False
+        use_finbert: bool = False,
+        rabbitmq_channel: Optional[aio_pika.Channel] = None
     ):
         """
         Initialize LunarCrush collector
@@ -56,6 +69,7 @@ class LunarCrushCollector(SocialCollector):
             api_key: LunarCrush API key
             rate_limit: Requests per second
             use_finbert: Not used for aggregated metrics
+            rabbitmq_channel: Optional RabbitMQ channel for publishing metrics
         """
         super().__init__(
             collector_name="lunarcrush",
@@ -66,6 +80,7 @@ class LunarCrushCollector(SocialCollector):
             use_finbert=False  # Not needed for aggregated data
         )
         
+        self.rabbitmq_channel = rabbitmq_channel
         logger.info("LunarCrush collector initialized")
         
     async def collect_data(self) -> Dict[str, Any]:
@@ -265,6 +280,10 @@ class LunarCrushCollector(SocialCollector):
                     social_volume=social_volume
                 )
                 
+                # Publish to RabbitMQ if channel available
+                if self.rabbitmq_channel:
+                    await self._publish_sentiment_update(aggregated_data, symbol)
+                
         except Exception as e:
             logger.error("Failed to store LunarCrush metrics", symbol=symbol, error=str(e))
             
@@ -373,3 +392,78 @@ class LunarCrushCollector(SocialCollector):
             )
             
             return None
+    
+    async def _publish_sentiment_update(self, aggregated_data: Dict, symbol: str):
+        """
+        Publish social sentiment update to RabbitMQ
+        
+        Args:
+            aggregated_data: Aggregated metrics data dictionary
+            symbol: Cryptocurrency symbol
+        """
+        try:
+            # Determine signal based on sentiment score
+            sentiment_score = aggregated_data.get("sentiment_score", 0.0)
+            if sentiment_score >= 0.3:
+                signal = TrendDirection.BULLISH
+            elif sentiment_score <= -0.3:
+                signal = TrendDirection.BEARISH
+            else:
+                signal = TrendDirection.NEUTRAL
+            
+            # Social volume from LunarCrush
+            social_volume = aggregated_data.get("social_volume", 0)
+            
+            # Create SocialSentimentUpdate message
+            update = SocialSentimentUpdate(
+                update_id=f"lunarcrush_{symbol.lower()}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+                symbol=symbol,
+                source="lunarcrush",
+                sentiment_score=sentiment_score,
+                social_volume=social_volume,
+                engagement_metrics={
+                    "altrank": aggregated_data.get("altrank"),
+                    "galaxy_score": aggregated_data.get("galaxy_score"),
+                    "social_dominance": aggregated_data.get("social_dominance"),
+                    "market_dominance": aggregated_data.get("market_dominance"),
+                    "social_contributors": aggregated_data.get("social_contributors")
+                },
+                influencer_sentiment=sentiment_score,  # LunarCrush is pre-aggregated
+                trending_topics=[symbol],
+                signal=signal,
+                confidence=abs(sentiment_score),
+                timestamp=aggregated_data["timestamp"],
+                metadata={
+                    "altrank": aggregated_data.get("altrank"),
+                    "galaxy_score": aggregated_data.get("galaxy_score"),
+                    "correlation_rank": aggregated_data.get("correlation_rank"),
+                    "source": "lunarcrush_aggregated"
+                }
+            )
+            
+            # Publish to RabbitMQ
+            message = aio_pika.Message(
+                body=serialize_message(update).encode(),
+                content_type="application/json",
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+            )
+            
+            await self.rabbitmq_channel.default_exchange.publish(
+                message,
+                routing_key=RoutingKeys.SENTIMENT_AGGREGATED
+            )
+            
+            logger.debug(
+                "Published LunarCrush sentiment to RabbitMQ",
+                symbol=symbol,
+                sentiment=sentiment_score,
+                altrank=aggregated_data.get("altrank"),
+                galaxy_score=aggregated_data.get("galaxy_score")
+            )
+            
+        except Exception as e:
+            logger.error(
+                "Failed to publish LunarCrush sentiment",
+                symbol=symbol,
+                error=str(e)
+            )

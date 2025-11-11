@@ -66,6 +66,8 @@ services:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:172.18.0.1"
+    ports:
+      - "8000:8000"  # Health and data endpoints
     networks:
       - mastertrade_network
     restart: unless-stopped
@@ -313,8 +315,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: mastertrade_redis
-    ports:
-      - "6379:6379"
+    # Port mapping removed - use internal network only
     volumes:
       - redis_data:/data
     networks:

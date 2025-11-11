@@ -1001,6 +1001,195 @@ class RiskPostgresDatabase:
     async def get_market_volatility(self) -> float:
         # Placeholder stubs for advanced controllers
         return settings.HIGH_VOLATILITY_THRESHOLD
+    
+    # ============================================================================
+    # Goal-Oriented Trading Methods
+    # ============================================================================
+    
+    @ensure_connection
+    async def get_current_goal_progress(self) -> Dict[str, float]:
+        """
+        Get current progress toward financial goals
+        
+        Returns:
+            Dictionary with:
+            - monthly_return_progress: Progress toward 10% monthly return (0.0 to 1.0+)
+            - monthly_income_progress: Progress toward €4k monthly income (0.0 to 1.0+)
+            - portfolio_value: Current total portfolio value in EUR
+        """
+        try:
+            # Get current month's start and end
+            now = datetime.now(timezone.utc)
+            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            
+            # Get portfolio value from positions
+            portfolio_query = """
+                SELECT COALESCE(SUM(current_value), 0) as total_value
+                FROM portfolio_positions
+                WHERE status = 'open'
+            """
+            portfolio_result = await self._postgres.fetchrow(portfolio_query)
+            portfolio_value = float(portfolio_result['total_value']) if portfolio_result else 0.0
+            
+            # Get month start portfolio value
+            month_start_query = """
+                SELECT portfolio_value
+                FROM goal_progress_history
+                WHERE snapshot_date = $1
+                ORDER BY created_at DESC
+                LIMIT 1
+            """
+            month_start_result = await self._postgres.fetchrow(month_start_query, month_start.date())
+            month_start_value = float(month_start_result['portfolio_value']) if month_start_result else portfolio_value
+            
+            # Calculate monthly return progress
+            if month_start_value > 0:
+                monthly_return = (portfolio_value - month_start_value) / month_start_value
+                monthly_return_progress = monthly_return / 0.10  # Target is 10%
+            else:
+                monthly_return_progress = 0.0
+            
+            # Get monthly realized P&L (income)
+            income_query = """
+                SELECT COALESCE(SUM(realized_pnl), 0) as total_income
+                FROM trades
+                WHERE exit_timestamp >= $1
+                AND exit_timestamp < $2
+                AND realized_pnl > 0
+            """
+            income_result = await self._postgres.fetchrow(income_query, month_start, now)
+            monthly_income = float(income_result['total_income']) if income_result else 0.0
+            monthly_income_progress = monthly_income / 4000.0  # Target is €4,000
+            
+            return {
+                'monthly_return_progress': monthly_return_progress,
+                'monthly_income_progress': monthly_income_progress,
+                'portfolio_value': portfolio_value,
+                'monthly_return_actual': monthly_return if month_start_value > 0 else 0.0,
+                'monthly_income_actual': monthly_income
+            }
+            
+        except Exception as e:
+            logger.error("Error getting goal progress", error=str(e))
+            return {
+                'monthly_return_progress': 0.0,
+                'monthly_income_progress': 0.0,
+                'portfolio_value': 0.0,
+                'monthly_return_actual': 0.0,
+                'monthly_income_actual': 0.0
+            }
+    
+    @ensure_connection
+    async def log_goal_adjustment(
+        self,
+        portfolio_value: float,
+        adjustment_factor: float,
+        reason: str
+    ) -> None:
+        """
+        Log position sizing adjustment decision for audit trail
+        
+        Args:
+            portfolio_value: Current portfolio value
+            adjustment_factor: Applied adjustment factor
+            reason: Reason for adjustment
+        """
+        try:
+            query = """
+                INSERT INTO goal_adjustment_log 
+                (id, timestamp, portfolio_value, adjustment_factor, reason)
+                VALUES (uuid_generate_v4(), $1, $2, $3, $4)
+            """
+            await self._postgres.execute(
+                query,
+                _utcnow(),
+                Decimal(str(portfolio_value)),
+                Decimal(str(adjustment_factor)),
+                reason
+            )
+        except Exception as e:
+            logger.error("Error logging goal adjustment", error=str(e))
+    
+    @ensure_connection
+    async def update_goal_progress_snapshot(
+        self,
+        goal_type: str,
+        target_value: float,
+        actual_value: float
+    ) -> None:
+        """
+        Store daily snapshot of goal progress
+        
+        Args:
+            goal_type: Type of goal (monthly_return, monthly_income, portfolio_value)
+            target_value: Target value for the goal
+            actual_value: Current actual value
+        """
+        try:
+            # Get or create goal
+            goal_query = """
+                INSERT INTO financial_goals (goal_type, target_value, current_value, progress_percent, status, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $6)
+                ON CONFLICT (goal_type)
+                DO UPDATE SET
+                    current_value = EXCLUDED.current_value,
+                    progress_percent = EXCLUDED.progress_percent,
+                    status = EXCLUDED.status,
+                    updated_at = EXCLUDED.updated_at
+                RETURNING id
+            """
+            
+            progress_percent = (actual_value / target_value * 100) if target_value > 0 else 0
+            status = self._get_goal_status(progress_percent)
+            
+            goal_result = await self._postgres.fetchrow(
+                goal_query,
+                goal_type,
+                Decimal(str(target_value)),
+                Decimal(str(actual_value)),
+                Decimal(str(progress_percent)),
+                status,
+                _utcnow()
+            )
+            
+            goal_id = goal_result['id']
+            
+            # Store progress history
+            history_query = """
+                INSERT INTO goal_progress_history 
+                (goal_id, snapshot_date, actual_value, target_value, variance_percent, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (goal_id, snapshot_date)
+                DO UPDATE SET
+                    actual_value = EXCLUDED.actual_value,
+                    variance_percent = EXCLUDED.variance_percent
+            """
+            
+            variance_percent = ((actual_value - target_value) / target_value * 100) if target_value > 0 else 0
+            
+            await self._postgres.execute(
+                history_query,
+                goal_id,
+                date.today(),
+                Decimal(str(actual_value)),
+                Decimal(str(target_value)),
+                Decimal(str(variance_percent)),
+                _utcnow()
+            )
+            
+        except Exception as e:
+            logger.error("Error updating goal progress snapshot", error=str(e), goal_type=goal_type)
+    
+    def _get_goal_status(self, progress_percent: float) -> str:
+        """Determine goal status based on progress percentage"""
+        if progress_percent >= 100:
+            return "achieved"
+        elif progress_percent >= 85:
+            return "on_track"
+        elif progress_percent >= 70:
+            return "at_risk"
+        else:
+            return "behind"
 
 
 # Global database instance for compatibility with existing imports

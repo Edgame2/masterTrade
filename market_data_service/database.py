@@ -651,6 +651,13 @@ class Database:
         return summary
 
     # ------------------------------------------------------------------
+    # NOTE: Social sentiment methods (store_social_sentiment, store_social_metrics_aggregated,
+    # get_social_sentiment, get_social_metrics_aggregated, get_trending_topics, 
+    # get_social_sentiment_summary) are implemented below in the "Social Sentiment Data Methods" 
+    # section (around line 2040+)
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
     # Stock market integration
     # ------------------------------------------------------------------
 
@@ -1985,6 +1992,233 @@ class Database:
         except Exception as e:
             logger.error("Error getting trending topics", error=str(e))
             return []
+
+    # ==========================================
+    # Collector Health Monitoring Methods
+    # ==========================================
+
+    @ensure_connection
+    async def log_collector_health(
+        self, 
+        collector_name: str, 
+        status: str, 
+        error_msg: Optional[str] = None,
+        metrics: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Log collector health status to the database.
+        
+        Args:
+            collector_name: Name of the collector (e.g., 'moralis', 'glassnode')
+            status: Health status ('healthy', 'degraded', 'failed')
+            error_msg: Optional error message if status is not healthy
+            metrics: Optional dict of collector-specific metrics
+            
+        Returns:
+            bool: True if logged successfully, False otherwise
+        """
+        try:
+            health_id = f"{collector_name}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+            
+            health_data = {
+                "collector_name": collector_name,
+                "status": status,
+                "timestamp": _utc_now_iso(),
+                "error_message": error_msg,
+                "metrics": metrics or {}
+            }
+            
+            query = """
+                INSERT INTO collector_health (id, partition_key, data, created_at)
+                VALUES ($1, $2, $3, NOW())
+            """
+            
+            await self._postgres.execute(
+                query,
+                health_id,
+                collector_name,
+                _prepare_document(health_data)
+            )
+            
+            logger.debug(
+                "Logged collector health",
+                collector=collector_name,
+                status=status,
+                has_error=error_msg is not None
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(
+                "Failed to log collector health",
+                collector=collector_name,
+                error=str(e)
+            )
+            return False
+
+    @ensure_connection
+    async def get_collector_health(
+        self, 
+        collector_name: Optional[str] = None,
+        limit: int = 100,
+        hours_back: int = 24
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve collector health records.
+        
+        Args:
+            collector_name: Optional specific collector name to filter by
+            limit: Maximum number of records to return
+            hours_back: How many hours of history to retrieve
+            
+        Returns:
+            List of health records with collector status information
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+            
+            if collector_name:
+                query = """
+                    SELECT 
+                        id,
+                        data->>'collector_name' as collector_name,
+                        data->>'status' as status,
+                        data->>'timestamp' as timestamp,
+                        data->>'error_message' as error_message,
+                        data->'metrics' as metrics,
+                        created_at
+                    FROM collector_health
+                    WHERE data->>'collector_name' = $1
+                        AND created_at >= $2
+                    ORDER BY created_at DESC
+                    LIMIT $3
+                """
+                rows = await self._postgres.fetch(query, collector_name, cutoff, limit)
+            else:
+                query = """
+                    SELECT 
+                        id,
+                        data->>'collector_name' as collector_name,
+                        data->>'status' as status,
+                        data->>'timestamp' as timestamp,
+                        data->>'error_message' as error_message,
+                        data->'metrics' as metrics,
+                        created_at
+                    FROM collector_health
+                    WHERE created_at >= $1
+                    ORDER BY created_at DESC
+                    LIMIT $2
+                """
+                rows = await self._postgres.fetch(query, cutoff, limit)
+            
+            health_records = []
+            for row in rows:
+                health_records.append({
+                    "id": row["id"],
+                    "collector_name": row["collector_name"],
+                    "status": row["status"],
+                    "timestamp": row["timestamp"],
+                    "error_message": row["error_message"],
+                    "metrics": json.loads(row["metrics"]) if row["metrics"] else {},
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None
+                })
+            
+            logger.debug(
+                "Retrieved collector health records",
+                collector=collector_name or "all",
+                count=len(health_records)
+            )
+            return health_records
+            
+        except Exception as e:
+            logger.error(
+                "Failed to get collector health",
+                collector=collector_name,
+                error=str(e)
+            )
+            return []
+
+    @ensure_connection
+    async def get_collector_health_summary(self) -> Dict[str, Any]:
+        """
+        Get a summary of all collector health statuses.
+        
+        Returns:
+            Dictionary with collector names as keys and their latest status info
+        """
+        try:
+            # Get the most recent health record for each collector
+            query = """
+                WITH latest_health AS (
+                    SELECT DISTINCT ON (data->>'collector_name')
+                        data->>'collector_name' as collector_name,
+                        data->>'status' as status,
+                        data->>'timestamp' as timestamp,
+                        data->>'error_message' as error_message,
+                        created_at
+                    FROM collector_health
+                    ORDER BY data->>'collector_name', created_at DESC
+                )
+                SELECT * FROM latest_health
+                ORDER BY collector_name
+            """
+            
+            rows = await self._postgres.fetch(query)
+            
+            summary = {}
+            for row in rows:
+                collector_name = row["collector_name"]
+                summary[collector_name] = {
+                    "status": row["status"],
+                    "last_check": row["timestamp"],
+                    "error_message": row["error_message"],
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None
+                }
+            
+            logger.debug("Retrieved collector health summary", collectors=len(summary))
+            return summary
+            
+        except Exception as e:
+            logger.error("Failed to get collector health summary", error=str(e))
+            return {}
+
+    @ensure_connection
+    async def update_collector_metrics(
+        self, 
+        collector_name: str, 
+        metric_name: str, 
+        value: float
+    ) -> bool:
+        """
+        Update a specific metric for a collector by logging it as a health check.
+        
+        Args:
+            collector_name: Name of the collector
+            metric_name: Name of the metric (e.g., 'success_rate', 'avg_response_time')
+            value: Metric value
+            
+        Returns:
+            bool: True if updated successfully
+        """
+        try:
+            metrics = {metric_name: value}
+            return await self.log_collector_health(
+                collector_name=collector_name,
+                status="healthy",  # Metrics updates assume healthy status
+                metrics=metrics
+            )
+            
+        except Exception as e:
+            logger.error(
+                "Failed to update collector metrics",
+                collector=collector_name,
+                metric=metric_name,
+                error=str(e)
+            )
+            return False
+
+
+
 
 
 

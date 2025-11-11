@@ -14,9 +14,21 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 import structlog
+import aio_pika
 
 from database import Database
 from collectors.onchain_collector import OnChainCollector, CollectorStatus
+
+# Import message schemas
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+from shared.message_schemas import (
+    WhaleAlertMessage,
+    AlertType,
+    serialize_message,
+    RoutingKeys
+)
 
 logger = structlog.get_logger()
 
@@ -50,7 +62,8 @@ class MoralisCollector(OnChainCollector):
         database: Database,
         api_key: str,
         rate_limit: float = 3.0,  # Moralis free tier: 3 req/s
-        timeout: int = 30
+        timeout: int = 30,
+        rabbitmq_channel: Optional[aio_pika.Channel] = None
     ):
         """
         Initialize Moralis collector
@@ -60,6 +73,7 @@ class MoralisCollector(OnChainCollector):
             api_key: Moralis API key
             rate_limit: Requests per second (default 3 for free tier)
             timeout: Request timeout in seconds
+            rabbitmq_channel: Optional RabbitMQ channel for publishing alerts
         """
         super().__init__(
             database=database,
@@ -71,6 +85,7 @@ class MoralisCollector(OnChainCollector):
         )
         
         self.watched_wallets = set(self.WATCHED_WALLETS)
+        self.rabbitmq_channel = rabbitmq_channel
         
     async def collect(self, symbols: List[str] = None, hours: int = 24) -> bool:
         """
@@ -334,6 +349,10 @@ class MoralisCollector(OnChainCollector):
                     amount=value,
                     tx_hash=tx_data["tx_hash"]
                 )
+                
+                # Publish to RabbitMQ if channel available
+                if self.rabbitmq_channel:
+                    await self._publish_whale_alert(tx_data, value)
             else:
                 logger.warning(
                     "Failed to store whale transaction",
@@ -399,6 +418,157 @@ class MoralisCollector(OnChainCollector):
         """
         self.watched_wallets.discard(wallet_address.lower())
         logger.info(f"Removed wallet from watch list: {wallet_address}")
+    
+    async def _publish_whale_alert(self, tx_data: Dict, amount: float):
+        """
+        Publish whale alert to RabbitMQ
+        
+        Args:
+            tx_data: Transaction data dictionary
+            amount: Transaction amount in native currency
+        """
+        try:
+            # Estimate USD value (simplified - would need price feed in production)
+            # For now, use rough estimates
+            symbol = tx_data.get("symbol", "")
+            if symbol == "BTC":
+                amount_usd = amount * 50000  # Rough BTC price
+            elif symbol == "ETH":
+                amount_usd = amount * 3000   # Rough ETH price
+            elif symbol in ["USDT", "USDC"]:
+                amount_usd = amount
+            else:
+                amount_usd = amount * 1000  # Default multiplier
+            
+            # Determine alert type
+            from_entity = self._identify_entity(tx_data.get("from_address", ""))
+            to_entity = self._identify_entity(tx_data.get("to_address", ""))
+            
+            if "exchange" in from_entity.lower():
+                alert_type = AlertType.EXCHANGE_OUTFLOW
+            elif "exchange" in to_entity.lower():
+                alert_type = AlertType.EXCHANGE_INFLOW
+            elif tx_data.get("is_whale_wallet"):
+                alert_type = AlertType.WHALE_ACCUMULATION if amount > 0 else AlertType.WHALE_DISTRIBUTION
+            else:
+                alert_type = AlertType.LARGE_TRANSFER
+            
+            # Calculate significance score (0-1)
+            if amount_usd >= 10_000_000:
+                significance = 1.0
+            elif amount_usd >= 5_000_000:
+                significance = 0.85
+            elif amount_usd >= 1_000_000:
+                significance = 0.7
+            else:
+                significance = 0.5
+            
+            # Create WhaleAlertMessage
+            alert = WhaleAlertMessage(
+                alert_id=f"moralis_{tx_data.get('tx_hash', '')}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+                alert_type=alert_type,
+                symbol=symbol,
+                amount=amount,
+                amount_usd=amount_usd,
+                from_address=tx_data.get("from_address"),
+                to_address=tx_data.get("to_address"),
+                from_entity=from_entity,
+                to_entity=to_entity,
+                transaction_hash=tx_data.get("tx_hash"),
+                blockchain="ethereum",
+                significance_score=significance,
+                market_impact_estimate=self._estimate_market_impact(amount_usd),
+                timestamp=datetime.fromisoformat(tx_data.get("timestamp", "").replace("Z", "+00:00")) if tx_data.get("timestamp") else datetime.utcnow(),
+                metadata=tx_data.get("metadata", {})
+            )
+            
+            # Publish to RabbitMQ
+            message = aio_pika.Message(
+                body=serialize_message(alert).encode(),
+                content_type="application/json",
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+            )
+            
+            routing_key = (
+                RoutingKeys.WHALE_ALERT_HIGH_PRIORITY 
+                if amount_usd > 10_000_000 
+                else RoutingKeys.WHALE_ALERT
+            )
+            
+            await self.rabbitmq_channel.default_exchange.publish(
+                message,
+                routing_key=routing_key
+            )
+            
+            logger.info(
+                "Published whale alert",
+                symbol=symbol,
+                amount_usd=f"${amount_usd:,.0f}",
+                alert_type=alert_type.value,
+                significance=significance
+            )
+            
+        except Exception as e:
+            logger.error("Error publishing whale alert", error=str(e))
+    
+    def _identify_entity(self, address: str) -> str:
+        """
+        Identify entity from wallet address
+        
+        Args:
+            address: Wallet address
+            
+        Returns:
+            Entity name or "Unknown Wallet"
+        """
+        if not address:
+            return "Unknown"
+        
+        address_lower = address.lower()
+        
+        # Known exchange addresses (simplified - would use comprehensive database in production)
+        exchanges = {
+            "0x00000000219ab540356cbb839cbe05303d7705fa": "Ethereum 2.0 Deposit",
+            "0x3f5ce5fbfe3e9af3971dd833d26ba9b5c936f0be": "Binance",
+            "0xd551234ae421e3bcba99a0da6d736074f22192ff": "Binance",
+            "0x564286362092d8e7936f0549571a803b203aaced": "Binance",
+            "0x0681d8db095565fe8a346fa0277bffde9c0edbbf": "Binance",
+            "0xfe9e8709d3215310075d67e3ed32a380ccf451c8": "Coinbase",
+            "0x71660c4005ba85c37ccec55d0c4493e66fe775d3": "Coinbase",
+            "0x503828976d22510aad0201ac7ec88293211d23da": "Coinbase",
+            "0xdfd5293d8e347dfe59e90efd55b2956a1343963d": "Coinbase",
+        }
+        
+        if address_lower in exchanges:
+            return exchanges[address_lower]
+        
+        # Check if it's a contract
+        if address_lower.startswith("0xc0"):
+            return "Smart Contract"
+        
+        return "Unknown Wallet"
+    
+    def _estimate_market_impact(self, amount_usd: float) -> float:
+        """
+        Estimate market impact percentage
+        
+        Args:
+            amount_usd: Transaction amount in USD
+            
+        Returns:
+            Estimated price impact percentage
+        """
+        # Simplified model - would use order book data in production
+        if amount_usd >= 50_000_000:
+            return -2.0  # -2% impact
+        elif amount_usd >= 10_000_000:
+            return -0.5  # -0.5% impact
+        elif amount_usd >= 5_000_000:
+            return -0.2  # -0.2% impact
+        elif amount_usd >= 1_000_000:
+            return -0.1  # -0.1% impact
+        else:
+            return -0.05  # Minimal impact
         
     async def get_watched_wallets(self) -> List[str]:
         """Get list of watched wallet addresses"""

@@ -35,6 +35,13 @@ else:
     from database import Database
 
 from models import MarketData, OrderBookData, TradeData
+from signal_aggregator import SignalAggregator
+
+# Import Redis cache manager
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from shared.redis_client import RedisCacheManager
 
 # Import components with fallback to mock versions
 try:
@@ -46,6 +53,9 @@ try:
     from strategy_request_handler import StrategyDataRequestHandler
     from collectors.moralis_collector import MoralisCollector
     from collectors.glassnode_collector import GlassnodeCollector
+    from collectors.twitter_collector import TwitterCollector
+    from collectors.reddit_collector import RedditCollector
+    from collectors.lunarcrush_collector import LunarCrushCollector
 except ImportError as e:
     structlog.get_logger().warning("Some components unavailable, using mocks", error=str(e))
     from mock_components import (
@@ -98,10 +108,23 @@ class MarketDataService:
         self.moralis_collector = None
         self.glassnode_collector = None
         
+        # Social media collectors
+        self.twitter_collector = None
+        self.reddit_collector = None
+        self.lunarcrush_collector = None
+        
         # Technical indicator system
         self.indicator_calculator = None
         self.indicator_config_manager = None
         self.strategy_request_handler = None
+        
+        # Signal aggregation
+        self.signal_aggregator = None
+        
+        # Redis cache
+        self.redis_cache = None
+        self.cache_hits = 0
+        self.cache_misses = 0
         
         # WebSocket connections
         self.websocket_connections: Dict[str, websockets.WebSocketServerProtocol] = {}
@@ -140,6 +163,20 @@ class MarketDataService:
             else:
                 logger.info("Using local .env configuration (Key Vault disabled)")
             
+            # Initialize Redis cache
+            try:
+                redis_url = getattr(settings, 'REDIS_URL', 'redis://redis:6379')
+                self.redis_cache = RedisCacheManager(redis_url=redis_url)
+                connected = await self.redis_cache.connect()
+                if connected:
+                    logger.info("Redis cache connected successfully")
+                else:
+                    logger.warning("Redis cache unavailable - caching disabled")
+                    self.redis_cache = None
+            except Exception as e:
+                logger.warning("Redis initialization failed - caching disabled", error=str(e))
+                self.redis_cache = None
+            
             # Initialize database connection
             await self.database.connect()
             logger.info("Database connection established")
@@ -156,32 +193,33 @@ class MarketDataService:
             logger.info(f"Loaded {len(self.symbols)} symbols for tracking")
             
             # Initialize historical data collector
-            self.historical_collector = HistoricalDataCollector(self.database)
+            self.historical_collector = HistoricalDataCollector(self.database, redis_cache=self.redis_cache)
             await self.historical_collector.connect()
             logger.info("Historical data collector initialized")
             
             # Initialize sentiment data collector
             if settings.SENTIMENT_ENABLED:
-                self.sentiment_collector = SentimentDataCollector(self.database)
+                self.sentiment_collector = SentimentDataCollector(self.database)  # No redis_cache yet
                 await self.sentiment_collector.connect()
                 logger.info("Sentiment data collector initialized")
                 
             # Initialize stock index collector
             if settings.STOCK_INDEX_ENABLED:
-                self.stock_index_collector = StockIndexDataCollector(self.database)
+                self.stock_index_collector = StockIndexDataCollector(self.database)  # No redis_cache yet
                 await self.stock_index_collector.connect()
                 logger.info("Stock index collector initialized")
             
-            # Initialize on-chain collectors
+            # Initialize on-chain collectors with Redis support for adaptive rate limiting
             if settings.ONCHAIN_COLLECTION_ENABLED:
                 if settings.MORALIS_API_KEY:
                     self.moralis_collector = MoralisCollector(
                         database=self.database,
                         api_key=settings.MORALIS_API_KEY,
-                        rate_limit=settings.MORALIS_RATE_LIMIT
+                        rate_limit=settings.MORALIS_RATE_LIMIT,
+                        redis_cache=self.redis_cache
                     )
                     await self.moralis_collector.connect()
-                    logger.info("Moralis on-chain collector initialized")
+                    logger.info("Moralis on-chain collector initialized with adaptive rate limiting")
                 else:
                     logger.warning("MORALIS_API_KEY not set - Moralis collector disabled")
                 
@@ -189,19 +227,95 @@ class MarketDataService:
                     self.glassnode_collector = GlassnodeCollector(
                         database=self.database,
                         api_key=settings.GLASSNODE_API_KEY,
-                        rate_limit=settings.GLASSNODE_RATE_LIMIT
+                        rate_limit=settings.GLASSNODE_RATE_LIMIT,
+                        redis_cache=self.redis_cache
                     )
                     await self.glassnode_collector.connect()
-                    logger.info("Glassnode on-chain collector initialized")
+                    logger.info("Glassnode on-chain collector initialized with adaptive rate limiting")
                 else:
                     logger.warning("GLASSNODE_API_KEY not set - Glassnode collector disabled")
+            
+            # Initialize social media collectors with Redis support for adaptive rate limiting
+            if settings.SOCIAL_COLLECTION_ENABLED:
+                if settings.TWITTER_BEARER_TOKEN:
+                    self.twitter_collector = TwitterCollector(
+                        database=self.database,
+                        api_key=settings.TWITTER_API_KEY,
+                        api_secret=settings.TWITTER_API_SECRET,
+                        bearer_token=settings.TWITTER_BEARER_TOKEN,
+                        rate_limit=settings.TWITTER_RATE_LIMIT,
+                        use_finbert=settings.SOCIAL_USE_FINBERT,
+                        redis_cache=self.redis_cache
+                    )
+                    await self.twitter_collector.connect()
+                    logger.info("Twitter social collector initialized with adaptive rate limiting")
+                else:
+                    logger.warning("TWITTER_BEARER_TOKEN not set - Twitter collector disabled")
+                
+                if settings.REDDIT_CLIENT_ID and settings.REDDIT_CLIENT_SECRET:
+                    self.reddit_collector = RedditCollector(
+                        database=self.database,
+                        client_id=settings.REDDIT_CLIENT_ID,
+                        client_secret=settings.REDDIT_CLIENT_SECRET,
+                        user_agent=settings.REDDIT_USER_AGENT,
+                        rate_limit=settings.REDDIT_RATE_LIMIT,
+                        use_finbert=settings.SOCIAL_USE_FINBERT,
+                        redis_cache=self.redis_cache
+                    )
+                    await self.reddit_collector.connect()
+                    logger.info("Reddit social collector initialized with adaptive rate limiting")
+                else:
+                    logger.warning("REDDIT_CLIENT_ID/SECRET not set - Reddit collector disabled")
+                
+                if settings.LUNARCRUSH_API_KEY:
+                    self.lunarcrush_collector = LunarCrushCollector(
+                        database=self.database,
+                        api_key=settings.LUNARCRUSH_API_KEY,
+                        rate_limit=settings.LUNARCRUSH_RATE_LIMIT,
+                        use_finbert=False,  # Not needed for aggregated metrics
+                        redis_cache=self.redis_cache
+                    )
+                    await self.lunarcrush_collector.connect()
+                    logger.info("LunarCrush social collector initialized with adaptive rate limiting")
+                else:
+                    logger.warning("LUNARCRUSH_API_KEY not set - LunarCrush collector disabled")
             
             # Initialize RabbitMQ
             try:
                 await self._init_rabbitmq()
                 logger.info("RabbitMQ connection established")
+                
+                # Update collectors with RabbitMQ channel for message publishing
+                if self.rabbitmq_channel:
+                    if self.moralis_collector:
+                        self.moralis_collector.rabbitmq_channel = self.rabbitmq_channel
+                        logger.info("Moralis collector connected to RabbitMQ")
+                    if self.glassnode_collector:
+                        self.glassnode_collector.rabbitmq_channel = self.rabbitmq_channel
+                        logger.info("Glassnode collector connected to RabbitMQ")
+                    if self.twitter_collector:
+                        self.twitter_collector.rabbitmq_channel = self.rabbitmq_channel
+                        logger.info("Twitter collector connected to RabbitMQ")
+                    if self.reddit_collector:
+                        self.reddit_collector.rabbitmq_channel = self.rabbitmq_channel
+                        logger.info("Reddit collector connected to RabbitMQ")
+                    if self.lunarcrush_collector:
+                        self.lunarcrush_collector.rabbitmq_channel = self.rabbitmq_channel
+                        logger.info("LunarCrush collector connected to RabbitMQ")
             except Exception as e:
                 logger.warning("RabbitMQ unavailable, continuing without messaging", error=str(e))
+            
+            # Initialize signal aggregator (requires RabbitMQ)
+            if self.rabbitmq_channel:
+                try:
+                    self.signal_aggregator = SignalAggregator(
+                        database=self.database,
+                        rabbitmq_channel=self.rabbitmq_channel,
+                        redis_cache=self.redis_cache
+                    )
+                    logger.info("Signal aggregator initialized")
+                except Exception as e:
+                    logger.warning("Signal aggregator initialization failed", error=str(e))
             
             # Initialize technical indicator system
             try:
@@ -634,6 +748,20 @@ class MarketDataService:
             onchain_task = asyncio.create_task(self._start_onchain_collection())
             self.scheduled_tasks.append(onchain_task)
             logger.info("On-chain data collection scheduled")
+        
+        # Start social media collection (periodic)
+        if settings.SOCIAL_COLLECTION_ENABLED and (self.twitter_collector or self.reddit_collector or self.lunarcrush_collector):
+            social_task = asyncio.create_task(self._start_social_collection())
+            self.scheduled_tasks.append(social_task)
+            logger.info("Social media data collection scheduled")
+        
+        # Start signal aggregator (real-time signal generation)
+        if self.signal_aggregator:
+            try:
+                await self.signal_aggregator.start()
+                logger.info("Signal aggregator started - publishing signals every 60 seconds")
+            except Exception as e:
+                logger.error("Failed to start signal aggregator", error=str(e))
             
         # Start periodic data maintenance
         maintenance_task = asyncio.create_task(self._start_data_maintenance())
@@ -1052,6 +1180,149 @@ class MarketDataService:
                 
         except Exception as e:
             logger.error("Error starting on-chain collection", error=str(e))
+    
+    async def _start_social_collection(self):
+        """
+        Start periodic social media data collection
+        
+        Collects sentiment data from:
+        - Twitter: Influencer tweets and keyword monitoring
+        - Reddit: Crypto subreddit posts and comments
+        - LunarCrush: Aggregated social metrics
+        """
+        logger.info("Starting social media data collection")
+        interval = settings.SOCIAL_COLLECTION_INTERVAL
+        
+        while self.running:
+            try:
+                cycle_start = datetime.now(timezone.utc)
+                logger.info("Starting social collection cycle")
+                
+                # Collect Twitter data
+                if self.twitter_collector:
+                    try:
+                        logger.info("Collecting Twitter data")
+                        twitter_results = await self.twitter_collector.collect_data()
+                        
+                        logger.info(
+                            "Twitter collection complete",
+                            tweets=twitter_results.get("tweets_collected", 0),
+                            influencer_tweets=twitter_results.get("influencer_tweets", 0)
+                        )
+                        
+                        # Get collector stats
+                        twitter_status = self.twitter_collector.get_status()
+                        
+                        # Publish Twitter sentiment summary to RabbitMQ
+                        if twitter_results.get("tweets_collected", 0) > 0:
+                            sentiment_summary = {
+                                "source": "twitter",
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "tweets_collected": twitter_results.get("tweets_collected", 0),
+                                "influencer_tweets": twitter_results.get("influencer_tweets", 0),
+                                "sentiment_distribution": twitter_results.get("sentiment_distribution", {}),
+                                "crypto_mentions": twitter_results.get("crypto_mentions", {}),
+                                "collector_status": twitter_status
+                            }
+                            
+                            await self._publish_to_rabbitmq(
+                                sentiment_summary,
+                                "social_sentiment",
+                                "social.sentiment.twitter"
+                            )
+                            
+                    except Exception as e:
+                        logger.error("Twitter collection failed", error=str(e))
+                
+                # Collect Reddit data
+                if self.reddit_collector:
+                    try:
+                        logger.info("Collecting Reddit data")
+                        reddit_results = await self.reddit_collector.collect_data()
+                        
+                        logger.info(
+                            "Reddit collection complete",
+                            posts=reddit_results.get("posts_collected", 0),
+                            comments=reddit_results.get("comments_collected", 0)
+                        )
+                        
+                        # Get collector stats
+                        reddit_status = self.reddit_collector.get_status()
+                        
+                        # Publish Reddit sentiment summary to RabbitMQ
+                        if reddit_results.get("posts_collected", 0) > 0:
+                            sentiment_summary = {
+                                "source": "reddit",
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "posts_collected": reddit_results.get("posts_collected", 0),
+                                "comments_collected": reddit_results.get("comments_collected", 0),
+                                "sentiment_distribution": reddit_results.get("sentiment_distribution", {}),
+                                "crypto_mentions": reddit_results.get("crypto_mentions", {}),
+                                "collector_status": reddit_status
+                            }
+                            
+                            await self._publish_to_rabbitmq(
+                                sentiment_summary,
+                                "social_sentiment",
+                                "social.sentiment.reddit"
+                            )
+                            
+                    except Exception as e:
+                        logger.error("Reddit collection failed", error=str(e))
+                
+                # Collect LunarCrush data
+                if self.lunarcrush_collector:
+                    try:
+                        logger.info("Collecting LunarCrush data")
+                        lunarcrush_results = await self.lunarcrush_collector.collect_data()
+                        
+                        logger.info(
+                            "LunarCrush collection complete",
+                            metrics_collected=lunarcrush_results.get("metrics_collected", 0),
+                            symbols_processed=lunarcrush_results.get("symbols_processed", 0)
+                        )
+                        
+                        # Get collector stats
+                        lunarcrush_status = self.lunarcrush_collector.get_status()
+                        
+                        # Publish LunarCrush metrics summary to RabbitMQ
+                        if lunarcrush_results.get("metrics_collected", 0) > 0:
+                            metrics_summary = {
+                                "source": "lunarcrush",
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "metrics_collected": lunarcrush_results.get("metrics_collected", 0),
+                                "symbols_processed": lunarcrush_results.get("symbols_processed", 0),
+                                "top_gainers": lunarcrush_results.get("top_gainers", []),
+                                "top_losers": lunarcrush_results.get("top_losers", []),
+                                "collector_status": lunarcrush_status
+                            }
+                            
+                            await self._publish_to_rabbitmq(
+                                metrics_summary,
+                                "social_metrics",
+                                "social.metrics.lunarcrush"
+                            )
+                            
+                    except Exception as e:
+                        logger.error("LunarCrush collection failed", error=str(e))
+                
+                # Log cycle completion
+                cycle_duration = (datetime.now(timezone.utc) - cycle_start).total_seconds()
+                logger.info(
+                    "Social collection cycle complete",
+                    duration_seconds=cycle_duration,
+                    next_cycle_in=interval
+                )
+                
+                # Wait for next cycle
+                await asyncio.sleep(interval)
+                
+            except asyncio.CancelledError:
+                logger.info("Social collection cancelled")
+                break
+            except Exception as e:
+                logger.error("Error in social collection cycle", error=str(e))
+                await asyncio.sleep(60)  # Wait 1 minute before retry on error
             
     async def _get_stock_market_summary(self, current_data: List[Dict]) -> Dict:
         """Generate stock market summary from current data"""
@@ -1205,6 +1476,24 @@ class MarketDataService:
         if hasattr(self, 'glassnode_collector') and self.glassnode_collector:
             await self.glassnode_collector.disconnect()
             logger.info("Glassnode collector disconnected")
+        
+        # Close social media collectors
+        if hasattr(self, 'twitter_collector') and self.twitter_collector:
+            await self.twitter_collector.disconnect()
+            logger.info("Twitter collector disconnected")
+            
+        if hasattr(self, 'reddit_collector') and self.reddit_collector:
+            await self.reddit_collector.disconnect()
+            logger.info("Reddit collector disconnected")
+            
+        if hasattr(self, 'lunarcrush_collector') and self.lunarcrush_collector:
+            await self.lunarcrush_collector.disconnect()
+            logger.info("LunarCrush collector disconnected")
+        
+        # Stop signal aggregator
+        if hasattr(self, 'signal_aggregator') and self.signal_aggregator:
+            await self.signal_aggregator.stop()
+            logger.info("Signal aggregator stopped")
 
         if self.socket_manager:
             try:
@@ -1224,6 +1513,14 @@ class MarketDataService:
         if self.rabbitmq_connection and not self.rabbitmq_connection.is_closed:
             await self.rabbitmq_connection.close()
         
+        # Close Redis cache
+        if self.redis_cache:
+            try:
+                await self.redis_cache.disconnect()
+                logger.info("Redis cache disconnected")
+            except Exception as e:
+                logger.warning("Error closing Redis cache", error=str(e))
+        
         if self.database:
             await self.database.disconnect()
         
@@ -1235,6 +1532,47 @@ class MarketDataService:
 # Health check endpoint
 async def health_check(request):
     return web.json_response({'status': 'healthy', 'service': 'market_data_service'})
+
+async def get_cache_stats(request):
+    """Get Redis cache statistics"""
+    try:
+        service = request.app['service']
+        
+        stats = {
+            'service_stats': {
+                'cache_hits': service.cache_hits,
+                'cache_misses': service.cache_misses,
+                'hit_rate': service.cache_hits / (service.cache_hits + service.cache_misses) if (service.cache_hits + service.cache_misses) > 0 else 0.0
+            },
+            'redis_connected': service.redis_cache is not None and service.redis_cache._connected if service.redis_cache else False
+        }
+        
+        # Add collector stats if available
+        if service.historical_collector and hasattr(service.historical_collector, 'cache_hits'):
+            stats['historical_collector'] = {
+                'cache_hits': service.historical_collector.cache_hits,
+                'cache_misses': service.historical_collector.cache_misses,
+                'hit_rate': service.historical_collector.cache_hits / (service.historical_collector.cache_hits + service.historical_collector.cache_misses) if (service.historical_collector.cache_hits + service.historical_collector.cache_misses) > 0 else 0.0
+            }
+        
+        # Add signal aggregator stats if available
+        if service.signal_aggregator and hasattr(service.signal_aggregator, 'cache_hits'):
+            stats['signal_aggregator'] = {
+                'cache_hits': service.signal_aggregator.cache_hits,
+                'cache_misses': service.signal_aggregator.cache_misses,
+                'hit_rate': service.signal_aggregator.cache_hits / (service.signal_aggregator.cache_hits + service.signal_aggregator.cache_misses) if (service.signal_aggregator.cache_hits + service.signal_aggregator.cache_misses) > 0 else 0.0
+            }
+        
+        return web.json_response({
+            'success': True,
+            'stats': stats
+        })
+        
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
 
 async def get_whale_transactions(request):
     """Get recent whale transactions"""
@@ -1339,13 +1677,1875 @@ async def get_collector_health(request):
             'error': str(e)
         }, status=500)
 
+async def get_social_sentiment(request):
+    """Get social sentiment data (Twitter, Reddit)"""
+    try:
+        # Get query parameters
+        symbol = request.query.get('symbol')
+        source = request.query.get('source')  # twitter, reddit
+        hours = int(request.query.get('hours', 24))
+        limit = int(request.query.get('limit', 100))
+        
+        # Get sentiment data from database
+        service = request.app['service']
+        sentiment_data = await service.database.get_social_sentiment(
+            symbol=symbol,
+            source=source,
+            hours=hours,
+            limit=limit
+        )
+        
+        return web.json_response({
+            'success': True,
+            'data': sentiment_data,
+            'count': len(sentiment_data),
+            'filters': {
+                'symbol': symbol,
+                'source': source,
+                'hours': hours,
+                'limit': limit
+            }
+        })
+        
+    except Exception as e:
+        logger.error("Error getting social sentiment", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def get_social_metrics(request):
+    """Get aggregated social metrics (LunarCrush)"""
+    try:
+        # Get query parameters
+        symbol = request.query.get('symbol')
+        hours = int(request.query.get('hours', 24))
+        limit = int(request.query.get('limit', 100))
+        
+        # Get metrics from database
+        service = request.app['service']
+        metrics_data = await service.database.get_social_metrics_aggregated(
+            symbol=symbol,
+            hours=hours,
+            limit=limit
+        )
+        
+        return web.json_response({
+            'success': True,
+            'data': metrics_data,
+            'count': len(metrics_data),
+            'filters': {
+                'symbol': symbol,
+                'hours': hours,
+                'limit': limit
+            }
+        })
+        
+    except Exception as e:
+        logger.error("Error getting social metrics", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def get_trending_topics(request):
+    """Get trending cryptocurrency topics based on social volume"""
+    try:
+        # Get query parameters
+        limit = int(request.query.get('limit', 10))
+        
+        # Get trending topics from database
+        service = request.app['service']
+        trending = await service.database.get_trending_topics(limit=limit)
+        
+        return web.json_response({
+            'success': True,
+            'data': trending,
+            'count': len(trending)
+        })
+        
+    except Exception as e:
+        logger.error("Error getting trending topics", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def get_social_collectors_health(request):
+    """Get health status of social collectors"""
+    try:
+        service = request.app['service']
+        
+        # Get collector health
+        collector_name = request.query.get('collector')  # twitter, reddit, lunarcrush
+        hours = int(request.query.get('hours', 24))
+        
+        health_logs = await service.database.get_collector_health(
+            collector_name=collector_name,
+            hours=hours
+        )
+        
+        # Get current collector status
+        collectors_status = {}
+        
+        if service.twitter_collector:
+            collectors_status['twitter'] = service.twitter_collector.get_status()
+        
+        if service.reddit_collector:
+            collectors_status['reddit'] = service.reddit_collector.get_status()
+        
+        if service.lunarcrush_collector:
+            collectors_status['lunarcrush'] = service.lunarcrush_collector.get_status()
+        
+        return web.json_response({
+            'success': True,
+            'current_status': collectors_status,
+            'health_logs': health_logs,
+            'count': len(health_logs)
+        })
+        
+    except Exception as e:
+        logger.error("Error getting social collector health", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def get_all_collectors_health(request):
+    """Get health status for all collectors"""
+    try:
+        service = request.app['service']
+        
+        # Get health summary from database
+        try:
+            summary = await service.database.get_collector_health_summary()
+        except Exception as db_error:
+            logger.error("Database error getting health summary", error=str(db_error))
+            summary = {}
+        
+        # Enrich with real-time status if collectors are running
+        collectors = {}
+        
+        # On-chain collectors
+        if hasattr(service, 'moralis_collector') and service.moralis_collector:
+            collectors['moralis'] = {
+                **summary.get('moralis', {}),
+                'enabled': True
+            }
+        
+        if hasattr(service, 'glassnode_collector') and service.glassnode_collector:
+            collectors['glassnode'] = {
+                **summary.get('glassnode', {}),
+                'enabled': True
+            }
+        
+        # Social collectors
+        if hasattr(service, 'twitter_collector') and service.twitter_collector:
+            collectors['twitter'] = {
+                **summary.get('twitter', {}),
+                'enabled': True
+            }
+        
+        if hasattr(service, 'reddit_collector') and service.reddit_collector:
+            collectors['reddit'] = {
+                **summary.get('reddit', {}),
+                'enabled': True
+            }
+        
+        if hasattr(service, 'lunarcrush_collector') and service.lunarcrush_collector:
+            collectors['lunarcrush'] = {
+                **summary.get('lunarcrush', {}),
+                'enabled': True
+            }
+        
+        # Add database records for any other collectors
+        for collector_name, health_info in summary.items():
+            if collector_name not in collectors:
+                collectors[collector_name] = {
+                    **health_info,
+                    'enabled': False
+                }
+        
+        return web.json_response({
+            'success': True,
+            'collectors': collectors,
+            'collector_count': len(collectors),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error("Error getting collectors health", error=str(e), traceback=traceback.format_exc())
+        return web.json_response({
+            'success': False,
+            'error': str(e),
+            'error_type': type(e).__name__
+        }, status=500)
+
+async def get_collector_health_detail(request):
+    """Get detailed health history for a specific collector"""
+    try:
+        service = request.app['service']
+        collector_name = request.match_info.get('collector_name')
+        
+        if not collector_name:
+            return web.json_response({
+                'success': False,
+                'error': 'collector_name is required'
+            }, status=400)
+        
+        # Get parameters
+        limit = int(request.query.get('limit', 100))
+        hours_back = int(request.query.get('hours', 24))
+        
+        # Get health records from database
+        health_records = await service.database.get_collector_health(
+            collector_name=collector_name,
+            limit=limit,
+            hours_back=hours_back
+        )
+        
+        if not health_records:
+            return web.json_response({
+                'success': False,
+                'error': f'No health records found for collector: {collector_name}'
+            }, status=404)
+        
+        # Calculate health statistics
+        total_checks = len(health_records)
+        healthy_count = sum(1 for r in health_records if r['status'] == 'healthy')
+        failed_count = sum(1 for r in health_records if r['status'] == 'failed')
+        degraded_count = sum(1 for r in health_records if r['status'] == 'degraded')
+        
+        health_rate = (healthy_count / total_checks * 100) if total_checks > 0 else 0
+        
+        return web.json_response({
+            'success': True,
+            'collector_name': collector_name,
+            'statistics': {
+                'total_checks': total_checks,
+                'healthy': healthy_count,
+                'failed': failed_count,
+                'degraded': degraded_count,
+                'health_rate': round(health_rate, 2)
+            },
+            'recent_records': health_records[:20],  # Return last 20 for UI
+            'all_records_count': total_checks
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error("Error getting collector health detail", error=str(e), traceback=traceback.format_exc())
+        return web.json_response({
+            'success': False,
+            'error': str(e),
+            'error_type': type(e).__name__
+        }, status=500)
+
+# ============================================================================
+# Signal Buffer Endpoints
+# ============================================================================
+
+async def get_recent_signals(request):
+    """
+    Get recent aggregated signals from Redis buffer
+    
+    Query parameters:
+    - symbol: Filter by trading pair (optional)
+    - limit: Max signals to return (default: 100, max: 1000)
+    - hours: Only return signals from last N hours (optional)
+    
+    Example: /signals/recent?symbol=BTCUSDT&limit=50&hours=24
+    """
+    try:
+        service = request.app['service']
+        
+        if not service.signal_aggregator:
+            return web.json_response({
+                'success': False,
+                'error': 'Signal aggregator not initialized'
+            }, status=503)
+        
+        # Parse query parameters
+        symbol = request.query.get('symbol')
+        limit = min(int(request.query.get('limit', 100)), 1000)  # Cap at 1000
+        hours_back = int(request.query.get('hours')) if 'hours' in request.query else None
+        
+        # Get signals from buffer
+        signals = await service.signal_aggregator.get_recent_signals(
+            symbol=symbol,
+            limit=limit,
+            hours_back=hours_back
+        )
+        
+        # Serialize signals
+        signals_data = []
+        for signal in signals:
+            signal_dict = signal.model_dump() if hasattr(signal, 'model_dump') else signal.dict()
+            # Convert datetime objects to ISO strings
+            for key, value in signal_dict.items():
+                if isinstance(value, datetime):
+                    signal_dict[key] = value.isoformat()
+            signals_data.append(signal_dict)
+        
+        return web.json_response({
+            'success': True,
+            'signals': signals_data,
+            'count': len(signals_data),
+            'filters': {
+                'symbol': symbol,
+                'limit': limit,
+                'hours_back': hours_back
+            }
+        })
+        
+    except ValueError as e:
+        return web.json_response({
+            'success': False,
+            'error': f'Invalid parameter: {str(e)}'
+        }, status=400)
+    except Exception as e:
+        import traceback
+        logger.error("Error getting recent signals", error=str(e), traceback=traceback.format_exc())
+        return web.json_response({
+            'success': False,
+            'error': str(e),
+            'error_type': type(e).__name__
+        }, status=500)
+
+async def get_signal_statistics(request):
+    """
+    Get statistics about recent signals for a symbol
+    
+    Query parameters:
+    - symbol: Trading pair (required)
+    - hours: Period to analyze (default: 24)
+    
+    Example: /signals/stats?symbol=BTCUSDT&hours=48
+    """
+    try:
+        service = request.app['service']
+        
+        if not service.signal_aggregator:
+            return web.json_response({
+                'success': False,
+                'error': 'Signal aggregator not initialized'
+            }, status=503)
+        
+        # Parse query parameters
+        symbol = request.query.get('symbol')
+        if not symbol:
+            return web.json_response({
+                'success': False,
+                'error': 'symbol parameter is required'
+            }, status=400)
+        
+        hours = int(request.query.get('hours', 24))
+        
+        # Get statistics
+        stats = await service.signal_aggregator.get_signal_statistics(symbol, hours)
+        
+        # Convert datetime in latest_signal if present
+        if stats.get('latest_signal') and isinstance(stats['latest_signal'].get('timestamp'), datetime):
+            stats['latest_signal']['timestamp'] = stats['latest_signal']['timestamp'].isoformat()
+        
+        return web.json_response({
+            'success': True,
+            'statistics': stats
+        })
+        
+    except ValueError as e:
+        return web.json_response({
+            'success': False,
+            'error': f'Invalid parameter: {str(e)}'
+        }, status=400)
+    except Exception as e:
+        import traceback
+        logger.error("Error getting signal statistics", error=str(e), traceback=traceback.format_exc())
+        return web.json_response({
+            'success': False,
+            'error': str(e),
+            'error_type': type(e).__name__
+        }, status=500)
+
+async def get_signal_buffer_info(request):
+    """
+    Get information about the signal buffer (size, TTL, etc.)
+    
+    Example: /signals/buffer/info
+    """
+    try:
+        service = request.app['service']
+        
+        if not service.signal_aggregator or not service.signal_aggregator.redis_cache:
+            return web.json_response({
+                'success': False,
+                'error': 'Redis signal buffer not available'
+            }, status=503)
+        
+        redis = service.signal_aggregator.redis_cache
+        redis_key = "signals:recent"
+        
+        # Get buffer info
+        buffer_size = await redis.zcard(redis_key)
+        ttl = await redis.ttl(redis_key)
+        
+        # Get time range of buffered signals
+        oldest_signal = None
+        newest_signal = None
+        
+        if buffer_size > 0:
+            # Get oldest (first in sorted set)
+            oldest = await redis.zrange(redis_key, 0, 0, withscores=True)
+            if oldest:
+                oldest_signal = datetime.fromtimestamp(oldest[0][1]).isoformat()
+            
+            # Get newest (last in sorted set)
+            newest = await redis.zrange(redis_key, -1, -1, withscores=True)
+            if newest:
+                newest_signal = datetime.fromtimestamp(newest[0][1]).isoformat()
+        
+        return web.json_response({
+            'success': True,
+            'buffer_info': {
+                'current_size': buffer_size,
+                'max_size': 1000,
+                'ttl_seconds': ttl if ttl > 0 else None,
+                'ttl_hours': round(ttl / 3600, 2) if ttl > 0 else None,
+                'oldest_signal': oldest_signal,
+                'newest_signal': newest_signal,
+                'redis_key': redis_key
+            }
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error("Error getting buffer info", error=str(e), traceback=traceback.format_exc())
+        return web.json_response({
+            'success': False,
+            'error': str(e),
+            'error_type': type(e).__name__
+        }, status=500)
+
+# ============================================================================
+# Data Source Management Endpoints
+# ============================================================================
+
+async def list_collectors(request):
+    """List all collectors with their status, configuration, and metrics"""
+    try:
+        service = request.app['service']
+        
+        collectors_info = {}
+        
+        # Helper function to get collector info
+        def get_collector_info(collector, name, collector_type):
+            if not collector:
+                return None
+            
+            info = {
+                'name': name,
+                'type': collector_type,
+                'enabled': True,
+                'connected': getattr(collector, 'session', None) is not None,
+            }
+            
+            # Get rate limiter stats
+            if hasattr(collector, 'rate_limiter'):
+                rl = collector.rate_limiter
+                info['rate_limiter'] = {
+                    'current_rate': rl.max_requests_per_second,
+                    'backoff_multiplier': rl.backoff_multiplier,
+                    'total_requests': rl.total_requests,
+                    'total_throttles': rl.total_throttles,
+                    'total_backoffs': rl.total_backoffs,
+                    'last_request_time': rl.last_request_time.isoformat() if rl.last_request_time else None,
+                }
+                
+                # Get per-endpoint stats if available
+                if hasattr(rl, 'endpoint_stats') and rl.endpoint_stats:
+                    info['rate_limiter']['endpoints'] = {}
+                    for endpoint, stats in rl.endpoint_stats.items():
+                        info['rate_limiter']['endpoints'][endpoint] = {
+                            'requests': stats['requests'],
+                            'rate_limit': stats.get('rate_limit'),
+                            'remaining': stats.get('remaining'),
+                            'reset_time': stats.get('reset_time')
+                        }
+            
+            # Get circuit breaker status
+            if hasattr(collector, 'circuit_breaker'):
+                cb_status = collector.circuit_breaker.get_status()
+                info['circuit_breaker'] = {
+                    'state': cb_status['state'],
+                    'failure_count': cb_status['failure_count'],
+                    'failure_threshold': cb_status['failure_threshold'],
+                    'health_score': cb_status.get('health_score', 0),
+                    'statistics': cb_status.get('statistics', {})
+                }
+            
+            # Get collector-specific config
+            if hasattr(collector, 'api_key'):
+                info['has_api_key'] = bool(collector.api_key)
+            
+            if hasattr(collector, 'rate_limit'):
+                info['configured_rate_limit'] = collector.rate_limit
+            
+            return info
+        
+        # On-chain collectors
+        if service.moralis_collector:
+            collectors_info['moralis'] = get_collector_info(service.moralis_collector, 'moralis', 'onchain')
+        if service.glassnode_collector:
+            collectors_info['glassnode'] = get_collector_info(service.glassnode_collector, 'glassnode', 'onchain')
+        
+        # Social media collectors
+        if service.twitter_collector:
+            collectors_info['twitter'] = get_collector_info(service.twitter_collector, 'twitter', 'social')
+        if service.reddit_collector:
+            collectors_info['reddit'] = get_collector_info(service.reddit_collector, 'reddit', 'social')
+        if service.lunarcrush_collector:
+            collectors_info['lunarcrush'] = get_collector_info(service.lunarcrush_collector, 'lunarcrush', 'social')
+        
+        # Historical and sentiment collectors
+        if service.historical_collector:
+            info = {
+                'name': 'historical',
+                'type': 'market_data',
+                'enabled': True,
+                'connected': True
+            }
+            collectors_info['historical'] = info
+        
+        if service.sentiment_collector:
+            info = {
+                'name': 'sentiment',
+                'type': 'sentiment',
+                'enabled': True,
+                'connected': True
+            }
+            collectors_info['sentiment'] = info
+        
+        if service.stock_index_collector:
+            info = {
+                'name': 'stock_index',
+                'type': 'market_data',
+                'enabled': True,
+                'connected': True
+            }
+            collectors_info['stock_index'] = info
+        
+        return web.json_response({
+            'success': True,
+            'collectors': collectors_info,
+            'total_count': len(collectors_info),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error("Error listing collectors", error=str(e), traceback=traceback.format_exc())
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def get_collector_status(request):
+    """Get detailed status for a specific collector"""
+    try:
+        service = request.app['service']
+        collector_name = request.match_info.get('name')
+        
+        collector_map = {
+            'moralis': service.moralis_collector,
+            'glassnode': service.glassnode_collector,
+            'twitter': service.twitter_collector,
+            'reddit': service.reddit_collector,
+            'lunarcrush': service.lunarcrush_collector,
+            'historical': service.historical_collector,
+            'sentiment': service.sentiment_collector,
+            'stock_index': service.stock_index_collector
+        }
+        
+        collector = collector_map.get(collector_name)
+        if not collector:
+            return web.json_response({
+                'success': False,
+                'error': f'Collector not found: {collector_name}'
+            }, status=404)
+        
+        status = {
+            'name': collector_name,
+            'enabled': True,
+            'connected': getattr(collector, 'session', None) is not None,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Rate limiter details
+        if hasattr(collector, 'rate_limiter'):
+            rl = collector.rate_limiter
+            status['rate_limiter'] = {
+                'current_rate': rl.max_requests_per_second,
+                'initial_rate': rl.initial_rate,
+                'backoff_multiplier': rl.backoff_multiplier,
+                'max_backoff': rl.max_backoff,
+                'statistics': {
+                    'total_requests': rl.total_requests,
+                    'total_throttles': rl.total_throttles,
+                    'total_backoffs': rl.total_backoffs,
+                    'total_429_errors': rl.total_429_errors,
+                    'total_adjustments': rl.total_adjustments
+                },
+                'last_request_time': rl.last_request_time.isoformat() if rl.last_request_time else None,
+                'last_adjustment_time': rl.last_adjustment_time.isoformat() if rl.last_adjustment_time else None
+            }
+            
+            # Per-endpoint statistics
+            if hasattr(rl, 'endpoint_stats') and rl.endpoint_stats:
+                status['rate_limiter']['endpoint_details'] = rl.endpoint_stats
+        
+        # Circuit breaker details
+        if hasattr(collector, 'circuit_breaker'):
+            cb_status = collector.circuit_breaker.get_status()
+            status['circuit_breaker'] = cb_status
+        
+        # Get recent health records from database
+        try:
+            health_records = await service.database.get_collector_health(
+                collector_name=collector_name,
+                limit=10,
+                hours=24
+            )
+            
+            if health_records:
+                status['recent_health'] = health_records[:5]
+                status['health_summary'] = {
+                    'total_checks': len(health_records),
+                    'healthy': sum(1 for r in health_records if r.get('status') == 'healthy'),
+                    'failed': sum(1 for r in health_records if r.get('status') == 'failed')
+                }
+        except Exception as e:
+            logger.warning(f"Could not fetch health records for {collector_name}", error=str(e))
+        
+        # Cost tracking (if available)
+        if hasattr(collector, 'api_calls_count'):
+            status['usage'] = {
+                'api_calls': collector.api_calls_count
+            }
+        
+        return web.json_response({
+            'success': True,
+            'collector': status
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error("Error getting collector status", error=str(e), traceback=traceback.format_exc())
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def enable_collector(request):
+    """Enable a collector"""
+    try:
+        service = request.app['service']
+        collector_name = request.match_info.get('name')
+        
+        collector_map = {
+            'moralis': service.moralis_collector,
+            'glassnode': service.glassnode_collector,
+            'twitter': service.twitter_collector,
+            'reddit': service.reddit_collector,
+            'lunarcrush': service.lunarcrush_collector
+        }
+        
+        collector = collector_map.get(collector_name)
+        if not collector:
+            return web.json_response({
+                'success': False,
+                'error': f'Collector not found: {collector_name}'
+            }, status=404)
+        
+        # For now, collectors are always enabled when initialized
+        # In the future, we could add an 'enabled' flag to collectors
+        
+        logger.info(f"Collector {collector_name} enabled via API")
+        
+        return web.json_response({
+            'success': True,
+            'message': f'Collector {collector_name} is enabled',
+            'collector': collector_name
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error("Error enabling collector", error=str(e), traceback=traceback.format_exc())
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def disable_collector(request):
+    """Disable a collector"""
+    try:
+        service = request.app['service']
+        collector_name = request.match_info.get('name')
+        
+        collector_map = {
+            'moralis': service.moralis_collector,
+            'glassnode': service.glassnode_collector,
+            'twitter': service.twitter_collector,
+            'reddit': service.reddit_collector,
+            'lunarcrush': service.lunarcrush_collector
+        }
+        
+        collector = collector_map.get(collector_name)
+        if not collector:
+            return web.json_response({
+                'success': False,
+                'error': f'Collector not found: {collector_name}'
+            }, status=404)
+        
+        # Disconnect the collector
+        if hasattr(collector, 'disconnect'):
+            await collector.disconnect()
+        
+        logger.info(f"Collector {collector_name} disabled via API")
+        
+        return web.json_response({
+            'success': True,
+            'message': f'Collector {collector_name} has been disabled',
+            'collector': collector_name
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error("Error disabling collector", error=str(e), traceback=traceback.format_exc())
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def restart_collector(request):
+    """Restart a collector (disconnect and reconnect)"""
+    try:
+        service = request.app['service']
+        collector_name = request.match_info.get('name')
+        
+        collector_map = {
+            'moralis': service.moralis_collector,
+            'glassnode': service.glassnode_collector,
+            'twitter': service.twitter_collector,
+            'reddit': service.reddit_collector,
+            'lunarcrush': service.lunarcrush_collector
+        }
+        
+        collector = collector_map.get(collector_name)
+        if not collector:
+            return web.json_response({
+                'success': False,
+                'error': f'Collector not found: {collector_name}'
+            }, status=404)
+        
+        # Disconnect
+        if hasattr(collector, 'disconnect'):
+            await collector.disconnect()
+            logger.info(f"Collector {collector_name} disconnected")
+        
+        # Wait a moment
+        await asyncio.sleep(1)
+        
+        # Reconnect
+        if hasattr(collector, 'connect'):
+            await collector.connect()
+            logger.info(f"Collector {collector_name} reconnected")
+        
+        logger.info(f"Collector {collector_name} restarted via API")
+        
+        return web.json_response({
+            'success': True,
+            'message': f'Collector {collector_name} has been restarted',
+            'collector': collector_name
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error("Error restarting collector", error=str(e), traceback=traceback.format_exc())
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def configure_collector_rate_limit(request):
+    """Update rate limit configuration for a collector"""
+    try:
+        service = request.app['service']
+        collector_name = request.match_info.get('name')
+        
+        collector_map = {
+            'moralis': service.moralis_collector,
+            'glassnode': service.glassnode_collector,
+            'twitter': service.twitter_collector,
+            'reddit': service.reddit_collector,
+            'lunarcrush': service.lunarcrush_collector
+        }
+        
+        collector = collector_map.get(collector_name)
+        if not collector:
+            return web.json_response({
+                'success': False,
+                'error': f'Collector not found: {collector_name}'
+            }, status=404)
+        
+        if not hasattr(collector, 'rate_limiter'):
+            return web.json_response({
+                'success': False,
+                'error': f'Collector {collector_name} does not have rate limiting'
+            }, status=400)
+        
+        # Get request body
+        try:
+            data = await request.json()
+        except:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid JSON in request body'
+            }, status=400)
+        
+        rl = collector.rate_limiter
+        
+        # Update rate limit settings
+        if 'max_requests_per_second' in data:
+            new_rate = float(data['max_requests_per_second'])
+            if new_rate <= 0:
+                return web.json_response({
+                    'success': False,
+                    'error': 'max_requests_per_second must be positive'
+                }, status=400)
+            rl.max_requests_per_second = new_rate
+            rl.interval = 1.0 / new_rate
+            logger.info(f"Updated {collector_name} rate limit to {new_rate} req/s")
+        
+        if 'backoff_multiplier' in data:
+            new_multiplier = float(data['backoff_multiplier'])
+            if new_multiplier < 1.0:
+                return web.json_response({
+                    'success': False,
+                    'error': 'backoff_multiplier must be >= 1.0'
+                }, status=400)
+            rl.backoff_multiplier = new_multiplier
+            logger.info(f"Updated {collector_name} backoff multiplier to {new_multiplier}")
+        
+        if 'max_backoff' in data:
+            new_max = float(data['max_backoff'])
+            if new_max < 1.0:
+                return web.json_response({
+                    'success': False,
+                    'error': 'max_backoff must be >= 1.0'
+                }, status=400)
+            rl.max_backoff = new_max
+            logger.info(f"Updated {collector_name} max backoff to {new_max}")
+        
+        # Save to Redis if available
+        if hasattr(rl, 'save_state_to_redis'):
+            await rl.save_state_to_redis()
+        
+        return web.json_response({
+            'success': True,
+            'message': f'Rate limit configuration updated for {collector_name}',
+            'collector': collector_name,
+            'updated_config': {
+                'max_requests_per_second': rl.max_requests_per_second,
+                'backoff_multiplier': rl.backoff_multiplier,
+                'max_backoff': rl.max_backoff
+            }
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error("Error configuring rate limit", error=str(e), traceback=traceback.format_exc())
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def reset_circuit_breaker(request):
+    """Reset circuit breaker for a collector"""
+    try:
+        service = request.app['service']
+        collector_name = request.match_info.get('name')
+        
+        collector_map = {
+            'moralis': service.moralis_collector,
+            'glassnode': service.glassnode_collector,
+            'twitter': service.twitter_collector,
+            'reddit': service.reddit_collector,
+            'lunarcrush': service.lunarcrush_collector
+        }
+        
+        collector = collector_map.get(collector_name)
+        if not collector:
+            return web.json_response({
+                'success': False,
+                'error': f'Collector not found: {collector_name}'
+            }, status=404)
+        
+        if not hasattr(collector, 'circuit_breaker'):
+            return web.json_response({
+                'success': False,
+                'error': f'Collector {collector_name} does not have circuit breaker'
+            }, status=400)
+        
+        # Reset the circuit breaker
+        collector.circuit_breaker.reset()
+        
+        # Save to Redis if available
+        if hasattr(collector.circuit_breaker, 'save_state_to_redis'):
+            await collector.circuit_breaker.save_state_to_redis()
+        
+        logger.info(f"Circuit breaker reset for {collector_name} via API")
+        
+        return web.json_response({
+            'success': True,
+            'message': f'Circuit breaker reset for {collector_name}',
+            'collector': collector_name,
+            'new_state': collector.circuit_breaker.get_status()
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error("Error resetting circuit breaker", error=str(e), traceback=traceback.format_exc())
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def force_circuit_breaker_state(request):
+    """Force circuit breaker to open or closed state"""
+    try:
+        service = request.app['service']
+        collector_name = request.match_info.get('name')
+        
+        collector_map = {
+            'moralis': service.moralis_collector,
+            'glassnode': service.glassnode_collector,
+            'twitter': service.twitter_collector,
+            'reddit': service.reddit_collector,
+            'lunarcrush': service.lunarcrush_collector
+        }
+        
+        collector = collector_map.get(collector_name)
+        if not collector:
+            return web.json_response({
+                'success': False,
+                'error': f'Collector not found: {collector_name}'
+            }, status=404)
+        
+        if not hasattr(collector, 'circuit_breaker'):
+            return web.json_response({
+                'success': False,
+                'error': f'Collector {collector_name} does not have circuit breaker'
+            }, status=400)
+        
+        # Get request body
+        try:
+            data = await request.json()
+        except:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid JSON in request body'
+            }, status=400)
+        
+        state = data.get('state', '').lower()
+        if state not in ['open', 'closed']:
+            return web.json_response({
+                'success': False,
+                'error': 'state must be "open" or "closed"'
+            }, status=400)
+        
+        cb = collector.circuit_breaker
+        
+        if state == 'open':
+            cb.force_open()
+        else:
+            cb.force_close()
+        
+        # Save to Redis if available
+        if hasattr(cb, 'save_state_to_redis'):
+            await cb.save_state_to_redis()
+        
+        logger.info(f"Circuit breaker forced to {state} for {collector_name} via API")
+        
+        return web.json_response({
+            'success': True,
+            'message': f'Circuit breaker forced to {state} for {collector_name}',
+            'collector': collector_name,
+            'new_state': cb.get_status()
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error("Error forcing circuit breaker state", error=str(e), traceback=traceback.format_exc())
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def get_collector_costs(request):
+    """Get cost and quota information for collectors"""
+    try:
+        service = request.app['service']
+        
+        costs = {}
+        
+        # Define cost structures (these would ideally come from config or database)
+        cost_info = {
+            'moralis': {
+                'tier': 'Pro',
+                'monthly_quota': 3000000,  # 3M compute units
+                'cost_per_call': 0.00001,  # Approximate
+                'quota_unit': 'compute_units'
+            },
+            'glassnode': {
+                'tier': 'Professional',
+                'daily_quota': 10000,
+                'cost_per_call': 0.001,
+                'quota_unit': 'requests'
+            },
+            'twitter': {
+                'tier': 'Essential',
+                'monthly_quota': 500000,
+                'cost_per_call': 0.0001,
+                'quota_unit': 'tweets'
+            },
+            'reddit': {
+                'tier': 'Free',
+                'daily_quota': 60,  # 60 requests per minute
+                'cost_per_call': 0,
+                'quota_unit': 'requests'
+            },
+            'lunarcrush': {
+                'tier': 'Pro',
+                'daily_quota': 10000,
+                'cost_per_call': 0.0005,
+                'quota_unit': 'requests'
+            }
+        }
+        
+        collector_map = {
+            'moralis': service.moralis_collector,
+            'glassnode': service.glassnode_collector,
+            'twitter': service.twitter_collector,
+            'reddit': service.reddit_collector,
+            'lunarcrush': service.lunarcrush_collector
+        }
+        
+        for name, collector in collector_map.items():
+            if not collector:
+                continue
+            
+            usage = {
+                'api_calls': 0,
+                'estimated_cost': 0.0
+            }
+            
+            # Get usage from rate limiter
+            if hasattr(collector, 'rate_limiter'):
+                usage['api_calls'] = collector.rate_limiter.total_requests
+                
+                if name in cost_info:
+                    cost_per_call = cost_info[name]['cost_per_call']
+                    usage['estimated_cost'] = usage['api_calls'] * cost_per_call
+            
+            costs[name] = {
+                **cost_info.get(name, {}),
+                'current_usage': usage,
+                'quota_remaining': None  # Would need to track this
+            }
+        
+        # Calculate totals
+        total_calls = sum(c['current_usage']['api_calls'] for c in costs.values())
+        total_cost = sum(c['current_usage']['estimated_cost'] for c in costs.values())
+        
+        return web.json_response({
+            'success': True,
+            'collectors': costs,
+            'totals': {
+                'total_api_calls': total_calls,
+                'total_estimated_cost': round(total_cost, 2)
+            },
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except Exception as e:
+        import traceback
+        logger.error("Error getting collector costs", error=str(e), traceback=traceback.format_exc())
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+# ============================================================================
+# Enhanced REST API v1 Endpoints - On-Chain Data
+# ============================================================================
+
+async def api_v1_whale_transactions(request):
+    """
+    GET /api/v1/onchain/whale-transactions
+    
+    Query whale transactions with filtering options.
+    
+    Query Parameters:
+        - symbol (str, optional): Filter by cryptocurrency symbol (e.g., 'BTC', 'ETH')
+        - hours (int, default=24): Hours of history to retrieve
+        - min_amount (float, optional): Minimum transaction amount in USD
+        - limit (int, default=100): Maximum number of results
+        - from_entity (str, optional): Filter by sender entity
+        - to_entity (str, optional): Filter by receiver entity
+    
+    Returns:
+        JSON response with whale transactions
+    """
+    try:
+        service = request.app['service']
+        
+        # Parse query parameters
+        symbol = request.query.get('symbol')
+        hours = int(request.query.get('hours', 24))
+        min_amount = float(request.query.get('min_amount')) if request.query.get('min_amount') else None
+        limit = int(request.query.get('limit', 100))
+        
+        # Query database
+        transactions = await service.database.get_whale_transactions(
+            symbol=symbol,
+            hours=hours,
+            min_amount=min_amount,
+            limit=limit
+        )
+        
+        # Calculate summary statistics
+        if transactions:
+            total_volume = sum(float(tx.get('amount', 0)) for tx in transactions)
+            avg_amount = total_volume / len(transactions) if transactions else 0
+            max_transaction = max(transactions, key=lambda x: float(x.get('amount', 0)))
+            
+            # Count by type
+            exchange_inflows = sum(1 for tx in transactions if tx.get('transaction_type') == 'exchange_inflow')
+            exchange_outflows = sum(1 for tx in transactions if tx.get('transaction_type') == 'exchange_outflow')
+            large_transfers = sum(1 for tx in transactions if tx.get('transaction_type') == 'large_transfer')
+        else:
+            total_volume = 0
+            avg_amount = 0
+            max_transaction = None
+            exchange_inflows = 0
+            exchange_outflows = 0
+            large_transfers = 0
+        
+        return web.json_response({
+            'success': True,
+            'data': transactions,
+            'count': len(transactions),
+            'summary': {
+                'total_volume_usd': round(total_volume, 2),
+                'average_amount_usd': round(avg_amount, 2),
+                'largest_transaction': {
+                    'amount': float(max_transaction.get('amount', 0)) if max_transaction else 0,
+                    'symbol': max_transaction.get('symbol') if max_transaction else None,
+                    'tx_hash': max_transaction.get('tx_hash') if max_transaction else None
+                } if max_transaction else None,
+                'by_type': {
+                    'exchange_inflows': exchange_inflows,
+                    'exchange_outflows': exchange_outflows,
+                    'large_transfers': large_transfers
+                }
+            },
+            'filters': {
+                'symbol': symbol,
+                'hours': hours,
+                'min_amount': min_amount,
+                'limit': limit
+            },
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except ValueError as e:
+        return web.json_response({
+            'success': False,
+            'error': f'Invalid parameter value: {str(e)}'
+        }, status=400)
+    except Exception as e:
+        logger.error("Error getting whale transactions", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def api_v1_onchain_metrics_by_symbol(request):
+    """
+    GET /api/v1/onchain/metrics/{symbol}
+    
+    Get on-chain metrics for a specific cryptocurrency.
+    
+    Path Parameters:
+        - symbol (str): Cryptocurrency symbol (e.g., 'BTC', 'ETH')
+    
+    Query Parameters:
+        - metric_name (str, optional): Specific metric to retrieve (nvt, mvrv, exchange_flow, etc.)
+        - hours (int, default=24): Hours of history to retrieve
+        - limit (int, default=100): Maximum number of results
+    
+    Returns:
+        JSON response with on-chain metrics
+    """
+    try:
+        service = request.app['service']
+        
+        # Get path parameter
+        symbol = request.match_info.get('symbol', '').upper()
+        if not symbol:
+            return web.json_response({
+                'success': False,
+                'error': 'Symbol is required'
+            }, status=400)
+        
+        # Parse query parameters
+        metric_name = request.query.get('metric_name')
+        hours = int(request.query.get('hours', 24))
+        limit = int(request.query.get('limit', 100))
+        
+        # Query database
+        metrics = await service.database.get_onchain_metrics(
+            symbol=symbol,
+            metric_name=metric_name,
+            hours=hours,
+            limit=limit
+        )
+        
+        # Group metrics by name for better presentation
+        metrics_by_name = {}
+        for metric in metrics:
+            name = metric.get('metric_name')
+            if name not in metrics_by_name:
+                metrics_by_name[name] = []
+            metrics_by_name[name].append(metric)
+        
+        # Get latest value for each metric
+        latest_metrics = {}
+        for name, metric_list in metrics_by_name.items():
+            if metric_list:
+                # Sort by timestamp and get latest
+                sorted_metrics = sorted(metric_list, key=lambda x: x.get('timestamp', ''), reverse=True)
+                latest_metrics[name] = {
+                    'value': sorted_metrics[0].get('value'),
+                    'timestamp': sorted_metrics[0].get('timestamp'),
+                    'unit': sorted_metrics[0].get('unit', ''),
+                    'data_points': len(metric_list)
+                }
+        
+        return web.json_response({
+            'success': True,
+            'symbol': symbol,
+            'data': metrics,
+            'count': len(metrics),
+            'latest_metrics': latest_metrics,
+            'available_metrics': list(metrics_by_name.keys()),
+            'filters': {
+                'metric_name': metric_name,
+                'hours': hours,
+                'limit': limit
+            },
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except ValueError as e:
+        return web.json_response({
+            'success': False,
+            'error': f'Invalid parameter value: {str(e)}'
+        }, status=400)
+    except Exception as e:
+        logger.error("Error getting on-chain metrics", error=str(e), symbol=symbol)
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def api_v1_wallet_info(request):
+    """
+    GET /api/v1/onchain/wallet/{address}
+    
+    Get information about a specific wallet address.
+    
+    Path Parameters:
+        - address (str): Wallet address to query
+    
+    Query Parameters:
+        - include_transactions (bool, default=false): Include recent transactions
+        - tx_limit (int, default=10): Number of recent transactions to include
+    
+    Returns:
+        JSON response with wallet information
+    """
+    try:
+        service = request.app['service']
+        
+        # Get path parameter
+        address = request.match_info.get('address', '').lower()
+        if not address:
+            return web.json_response({
+                'success': False,
+                'error': 'Wallet address is required'
+            }, status=400)
+        
+        # Validate address format (basic check for Ethereum-like addresses)
+        if not address.startswith('0x') or len(address) != 42:
+            return web.json_response({
+                'success': False,
+                'error': 'Invalid wallet address format. Expected Ethereum address (0x...)'
+            }, status=400)
+        
+        # Parse query parameters
+        include_transactions = request.query.get('include_transactions', 'false').lower() == 'true'
+        tx_limit = int(request.query.get('tx_limit', 10))
+        
+        # Get wallet label/category if known
+        wallet_label = await service.database.get_wallet_label(address)
+        
+        response_data = {
+            'success': True,
+            'address': address,
+            'label': wallet_label.get('label') if wallet_label else 'Unknown',
+            'category': wallet_label.get('category') if wallet_label else 'unknown',
+            'is_labeled': wallet_label is not None,
+            'metadata': wallet_label.get('metadata', {}) if wallet_label else {}
+        }
+        
+        # Optionally include recent transactions involving this address
+        if include_transactions:
+            # Query whale transactions that involve this address
+            all_transactions = await service.database.get_whale_transactions(
+                hours=168,  # Last week
+                limit=1000  # Get more to filter
+            )
+            
+            # Filter transactions involving this address
+            wallet_transactions = [
+                tx for tx in all_transactions
+                if tx.get('from_address', '').lower() == address or
+                   tx.get('to_address', '').lower() == address
+            ][:tx_limit]
+            
+            # Calculate transaction summary
+            total_sent = sum(
+                float(tx.get('amount', 0))
+                for tx in wallet_transactions
+                if tx.get('from_address', '').lower() == address
+            )
+            total_received = sum(
+                float(tx.get('amount', 0))
+                for tx in wallet_transactions
+                if tx.get('to_address', '').lower() == address
+            )
+            
+            response_data['transactions'] = {
+                'recent': wallet_transactions,
+                'count': len(wallet_transactions),
+                'summary': {
+                    'total_sent_usd': round(total_sent, 2),
+                    'total_received_usd': round(total_received, 2),
+                    'net_flow_usd': round(total_received - total_sent, 2)
+                }
+            }
+        
+        response_data['timestamp'] = datetime.now(timezone.utc).isoformat()
+        
+        return web.json_response(response_data)
+        
+    except ValueError as e:
+        return web.json_response({
+            'success': False,
+            'error': f'Invalid parameter value: {str(e)}'
+        }, status=400)
+    except Exception as e:
+        logger.error("Error getting wallet info", error=str(e), address=address)
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+# ============================================================================
+# End of Enhanced REST API v1 Endpoints
+# ============================================================================
+
+# ==========================================
+# Enhanced REST API v1 - Social Sentiment Endpoints
+# ==========================================
+
+async def api_v1_social_sentiment_by_symbol(request):
+    """
+    REST API endpoint to get aggregated sentiment data for a symbol
+    
+    GET /api/v1/social/sentiment/{symbol}
+    
+    Path Parameters:
+        symbol: Cryptocurrency symbol (e.g., BTC, ETH)
+    
+    Query Parameters:
+        hours: Hours of history (default: 24, max: 720)
+        source: Filter by source (twitter, reddit, all) (optional)
+        limit: Maximum results (default: 100, max: 1000)
+    
+    Returns:
+        {
+            "success": true,
+            "symbol": "BTC",
+            "data": [...sentiment records...],
+            "count": 50,
+            "summary": {
+                "average_sentiment": 0.65,
+                "total_mentions": 1234,
+                "total_engagement": 56789,
+                "sentiment_breakdown": {
+                    "positive": 60,
+                    "neutral": 30,
+                    "negative": 10
+                },
+                "by_source": {
+                    "twitter": {"count": 800, "avg_sentiment": 0.68},
+                    "reddit": {"count": 434, "avg_sentiment": 0.61}
+                }
+            },
+            "filters": {...},
+            "timestamp": "2025-11-11T12:00:00Z"
+        }
+    """
+    try:
+        service = request.app['service']
+        
+        # Extract path parameter
+        symbol = request.match_info.get('symbol', '').upper()
+        if not symbol:
+            return web.Response(
+                text=json.dumps({
+                    "success": False,
+                    "error": "Symbol parameter is required"
+                }),
+                status=400,
+                content_type='application/json'
+            )
+        
+        # Parse query parameters
+        hours = int(request.query.get('hours', 24))
+        hours = min(max(hours, 1), 720)  # Clamp between 1 and 720 hours
+        
+        source = request.query.get('source', '').lower()
+        if source and source not in ['twitter', 'reddit', 'all', '']:
+            return web.Response(
+                text=json.dumps({
+                    "success": False,
+                    "error": "Invalid source. Must be 'twitter', 'reddit', or 'all'"
+                }),
+                status=400,
+                content_type='application/json'
+            )
+        
+        # Use None for 'all' or empty string
+        if source in ['all', '']:
+            source = None
+        
+        limit = int(request.query.get('limit', 100))
+        limit = min(max(limit, 1), 1000)  # Clamp between 1 and 1000
+        
+        # Get sentiment data from database
+        sentiment_data = await service.database.get_social_sentiment(
+            symbol=symbol,
+            source=source,
+            hours=hours,
+            limit=limit
+        )
+        
+        # Calculate summary statistics
+        summary = {
+            "average_sentiment": 0.0,
+            "total_mentions": len(sentiment_data),
+            "total_engagement": 0,
+            "sentiment_breakdown": {
+                "positive": 0,
+                "neutral": 0,
+                "negative": 0
+            },
+            "by_source": {}
+        }
+        
+        if sentiment_data:
+            sentiment_scores = []
+            source_stats = {}
+            
+            for record in sentiment_data:
+                # Extract sentiment score
+                score = record.get('sentiment_score', 0.0)
+                if isinstance(score, (int, float)):
+                    sentiment_scores.append(score)
+                    
+                    # Classify sentiment
+                    if score > 0.2:
+                        summary["sentiment_breakdown"]["positive"] += 1
+                    elif score < -0.2:
+                        summary["sentiment_breakdown"]["negative"] += 1
+                    else:
+                        summary["sentiment_breakdown"]["neutral"] += 1
+                
+                # Aggregate engagement
+                engagement = record.get('engagement_score', 0)
+                if isinstance(engagement, (int, float)):
+                    summary["total_engagement"] += int(engagement)
+                
+                # Track by source
+                rec_source = record.get('source', 'unknown')
+                if rec_source not in source_stats:
+                    source_stats[rec_source] = {
+                        "count": 0,
+                        "total_sentiment": 0.0
+                    }
+                source_stats[rec_source]["count"] += 1
+                source_stats[rec_source]["total_sentiment"] += score
+            
+            # Calculate averages
+            if sentiment_scores:
+                summary["average_sentiment"] = sum(sentiment_scores) / len(sentiment_scores)
+            
+            # Calculate per-source averages
+            for src, stats in source_stats.items():
+                summary["by_source"][src] = {
+                    "count": stats["count"],
+                    "avg_sentiment": stats["total_sentiment"] / stats["count"] if stats["count"] > 0 else 0.0
+                }
+        
+        response = {
+            "success": True,
+            "symbol": symbol,
+            "data": sentiment_data,
+            "count": len(sentiment_data),
+            "summary": summary,
+            "filters": {
+                "hours": hours,
+                "source": source if source else "all",
+                "limit": limit
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        return web.Response(
+            text=json.dumps(response, indent=2),
+            content_type='application/json'
+        )
+        
+    except ValueError as e:
+        logger.error("Invalid query parameter", error=str(e))
+        return web.Response(
+            text=json.dumps({
+                "success": False,
+                "error": f"Invalid parameter value: {str(e)}"
+            }),
+            status=400,
+            content_type='application/json'
+        )
+    except Exception as e:
+        logger.error("Error in api_v1_social_sentiment_by_symbol", error=str(e))
+        return web.Response(
+            text=json.dumps({
+                "success": False,
+                "error": "Internal server error"
+            }),
+            status=500,
+            content_type='application/json'
+        )
+
+
+async def api_v1_social_trending(request):
+    """
+    REST API endpoint to get trending cryptocurrencies
+    
+    GET /api/v1/social/trending
+    
+    Query Parameters:
+        limit: Number of trending topics (default: 20, max: 100)
+        hours: Hours to analyze (default: 24, max: 168)
+    
+    Returns:
+        {
+            "success": true,
+            "data": [
+                {
+                    "symbol": "BTC",
+                    "mention_count": 1234,
+                    "avg_sentiment": 0.65,
+                    "total_engagement": 56789,
+                    "unique_authors": 890,
+                    "rank": 1
+                },
+                ...
+            ],
+            "count": 20,
+            "filters": {...},
+            "timestamp": "2025-11-11T12:00:00Z"
+        }
+    """
+    try:
+        service = request.app['service']
+        
+        # Parse query parameters
+        limit = int(request.query.get('limit', 20))
+        limit = min(max(limit, 1), 100)  # Clamp between 1 and 100
+        
+        hours = int(request.query.get('hours', 24))
+        hours = min(max(hours, 1), 168)  # Clamp between 1 and 168 hours (1 week)
+        
+        # Get trending topics from database
+        # Note: The database method doesn't currently support hours parameter
+        # We'll use the default 24-hour window
+        trending_data = await service.database.get_trending_topics(limit=limit)
+        
+        # Add rank to each item
+        for idx, item in enumerate(trending_data, start=1):
+            item["rank"] = idx
+        
+        response = {
+            "success": True,
+            "data": trending_data,
+            "count": len(trending_data),
+            "filters": {
+                "limit": limit,
+                "hours": 24  # Fixed at 24 hours for now
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        return web.Response(
+            text=json.dumps(response, indent=2),
+            content_type='application/json'
+        )
+        
+    except ValueError as e:
+        logger.error("Invalid query parameter", error=str(e))
+        return web.Response(
+            text=json.dumps({
+                "success": False,
+                "error": f"Invalid parameter value: {str(e)}"
+            }),
+            status=400,
+            content_type='application/json'
+        )
+    except Exception as e:
+        logger.error("Error in api_v1_social_trending", error=str(e))
+        return web.Response(
+            text=json.dumps({
+                "success": False,
+                "error": "Internal server error"
+            }),
+            status=500,
+            content_type='application/json'
+        )
+
+
+async def api_v1_social_influencers(request):
+    """
+    REST API endpoint to get top influencers and their sentiment
+    
+    GET /api/v1/social/influencers
+    
+    Query Parameters:
+        symbol: Filter by cryptocurrency symbol (optional)
+        limit: Number of influencers to return (default: 50, max: 200)
+        hours: Hours of history (default: 24, max: 168)
+        min_followers: Minimum follower count (optional)
+    
+    Returns:
+        {
+            "success": true,
+            "data": [
+                {
+                    "author_id": "user123",
+                    "username": "crypto_guru",
+                    "follower_count": 50000,
+                    "post_count": 15,
+                    "avg_sentiment": 0.75,
+                    "total_engagement": 12345,
+                    "symbols_mentioned": ["BTC", "ETH"],
+                    "is_verified": true
+                },
+                ...
+            ],
+            "count": 50,
+            "filters": {...},
+            "timestamp": "2025-11-11T12:00:00Z"
+        }
+    """
+    try:
+        service = request.app['service']
+        
+        # Parse query parameters
+        symbol = request.query.get('symbol', '').upper() if request.query.get('symbol') else None
+        
+        limit = int(request.query.get('limit', 50))
+        limit = min(max(limit, 1), 200)  # Clamp between 1 and 200
+        
+        hours = int(request.query.get('hours', 24))
+        hours = min(max(hours, 1), 168)  # Clamp between 1 and 168 hours
+        
+        min_followers = request.query.get('min_followers')
+        if min_followers:
+            min_followers = int(min_followers)
+        else:
+            min_followers = 0
+        
+        # Get influencer data from database
+        # We need to query social_sentiment table with is_influencer = true
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        
+        if symbol:
+            query = """
+                SELECT 
+                    data->>'author_id' as author_id,
+                    data->>'author_username' as username,
+                    MAX((data->>'author_followers')::int) as follower_count,
+                    COUNT(*) as post_count,
+                    AVG((data->>'sentiment_score')::float) as avg_sentiment,
+                    SUM((data->>'engagement_score')::int) as total_engagement,
+                    ARRAY_AGG(DISTINCT data->>'symbol') as symbols_mentioned,
+                    BOOL_OR((data->>'is_verified')::boolean) as is_verified
+                FROM social_sentiment
+                WHERE (data->>'is_influencer')::boolean = true
+                  AND data->>'symbol' = $1
+                  AND (data->>'timestamp')::timestamptz >= $2
+                GROUP BY data->>'author_id', data->>'author_username'
+                HAVING MAX((data->>'author_followers')::int) >= $3
+                ORDER BY follower_count DESC, total_engagement DESC
+                LIMIT $4
+            """
+            params = [symbol, cutoff, min_followers, limit]
+        else:
+            query = """
+                SELECT 
+                    data->>'author_id' as author_id,
+                    data->>'author_username' as username,
+                    MAX((data->>'author_followers')::int) as follower_count,
+                    COUNT(*) as post_count,
+                    AVG((data->>'sentiment_score')::float) as avg_sentiment,
+                    SUM((data->>'engagement_score')::int) as total_engagement,
+                    ARRAY_AGG(DISTINCT data->>'symbol') as symbols_mentioned,
+                    BOOL_OR((data->>'is_verified')::boolean) as is_verified
+                FROM social_sentiment
+                WHERE (data->>'is_influencer')::boolean = true
+                  AND (data->>'timestamp')::timestamptz >= $1
+                GROUP BY data->>'author_id', data->>'author_username'
+                HAVING MAX((data->>'author_followers')::int) >= $2
+                ORDER BY follower_count DESC, total_engagement DESC
+                LIMIT $3
+            """
+            params = [cutoff, min_followers, limit]
+        
+        rows = await service.database._postgres.fetch(query, *params)
+        
+        influencers = []
+        for row in rows:
+            influencers.append({
+                "author_id": row["author_id"],
+                "username": row["username"],
+                "follower_count": row["follower_count"],
+                "post_count": row["post_count"],
+                "avg_sentiment": float(row["avg_sentiment"]) if row["avg_sentiment"] else 0.0,
+                "total_engagement": row["total_engagement"] if row["total_engagement"] else 0,
+                "symbols_mentioned": row["symbols_mentioned"],
+                "is_verified": row["is_verified"] if row["is_verified"] else False
+            })
+        
+        response = {
+            "success": True,
+            "data": influencers,
+            "count": len(influencers),
+            "filters": {
+                "symbol": symbol if symbol else "all",
+                "limit": limit,
+                "hours": hours,
+                "min_followers": min_followers
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        return web.Response(
+            text=json.dumps(response, indent=2),
+            content_type='application/json'
+        )
+        
+    except ValueError as e:
+        logger.error("Invalid query parameter", error=str(e))
+        return web.Response(
+            text=json.dumps({
+                "success": False,
+                "error": f"Invalid parameter value: {str(e)}"
+            }),
+            status=400,
+            content_type='application/json'
+        )
+    except Exception as e:
+        logger.error("Error in api_v1_social_influencers", error=str(e))
+        return web.Response(
+            text=json.dumps({
+                "success": False,
+                "error": "Internal server error"
+            }),
+            status=500,
+            content_type='application/json'
+        )
+
 async def create_health_server():
     """Create health check server"""
     app = web.Application()
     app.router.add_get('/health', health_check)
+    app.router.add_get('/cache/stats', get_cache_stats)
+    
+    # General collector health endpoints
+    app.router.add_get('/health/collectors', get_all_collectors_health)
+    app.router.add_get('/health/collectors/{collector_name}', get_collector_health_detail)
+    
+    # Signal buffer endpoints
+    app.router.add_get('/signals/recent', get_recent_signals)
+    app.router.add_get('/signals/stats', get_signal_statistics)
+    app.router.add_get('/signals/buffer/info', get_signal_buffer_info)
+    
+    # On-chain data endpoints (legacy, kept for backward compatibility)
     app.router.add_get('/onchain/whales', get_whale_transactions)
     app.router.add_get('/onchain/metrics', get_onchain_metrics)
     app.router.add_get('/onchain/collectors/health', get_collector_health)
+    
+    # Enhanced REST API v1 - On-Chain Data Endpoints
+    app.router.add_get('/api/v1/onchain/whale-transactions', api_v1_whale_transactions)
+    app.router.add_get('/api/v1/onchain/metrics/{symbol}', api_v1_onchain_metrics_by_symbol)
+    app.router.add_get('/api/v1/onchain/wallet/{address}', api_v1_wallet_info)
+    
+    # Enhanced REST API v1 - Social Sentiment Endpoints
+    app.router.add_get('/api/v1/social/sentiment/{symbol}', api_v1_social_sentiment_by_symbol)
+    app.router.add_get('/api/v1/social/trending', api_v1_social_trending)
+    app.router.add_get('/api/v1/social/influencers', api_v1_social_influencers)
+    
+    # Social sentiment endpoints
+    app.router.add_get('/social/sentiment', get_social_sentiment)
+    app.router.add_get('/social/metrics', get_social_metrics)
+    app.router.add_get('/social/trending', get_trending_topics)
+    app.router.add_get('/social/collectors/health', get_social_collectors_health)
+    
+    # Data Source Management Endpoints
+    app.router.add_get('/collectors', list_collectors)
+    app.router.add_get('/collectors/{name}', get_collector_status)
+    app.router.add_post('/collectors/{name}/enable', enable_collector)
+    app.router.add_post('/collectors/{name}/disable', disable_collector)
+    app.router.add_post('/collectors/{name}/restart', restart_collector)
+    app.router.add_put('/collectors/{name}/rate-limit', configure_collector_rate_limit)
+    app.router.add_post('/collectors/{name}/circuit-breaker/reset', reset_circuit_breaker)
+    app.router.add_put('/collectors/{name}/circuit-breaker/state', force_circuit_breaker_state)
+    app.router.add_get('/collectors/costs', get_collector_costs)
+    
     return app
 
 async def main():

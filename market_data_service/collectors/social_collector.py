@@ -59,7 +59,8 @@ class SocialCollector:
     
     Provides common functionality:
     - Sentiment analysis (VADER + FinBERT)
-    - Rate limiting and circuit breaker
+    - Adaptive rate limiting with header parsing
+    - Circuit breaker for failure handling
     - Bot detection
     - Data normalization and storage
     """
@@ -71,7 +72,8 @@ class SocialCollector:
         api_key: Optional[str] = None,
         api_url: Optional[str] = None,
         rate_limit: float = 1.0,
-        use_finbert: bool = False
+        use_finbert: bool = False,
+        redis_cache=None
     ):
         """
         Initialize social collector
@@ -81,17 +83,30 @@ class SocialCollector:
             database: Database instance for storage
             api_key: API key for the social media platform
             api_url: Base URL for API requests
-            rate_limit: Requests per second limit
+            rate_limit: Initial requests per second limit
             use_finbert: Whether to use FinBERT for sentiment analysis
+            redis_cache: Optional Redis cache for rate limiter state persistence
         """
         self.collector_name = collector_name
         self.database = database
         self.api_key = api_key
         self.api_url = api_url
+        self.redis_cache = redis_cache
         
-        # Rate limiting and circuit breaker
-        self.rate_limiter = RateLimiter(rate_limit)
-        self.circuit_breaker = CircuitBreaker(failure_threshold=5, timeout_seconds=300)
+        # Rate limiting and circuit breaker with Redis support
+        self.rate_limiter = RateLimiter(
+            max_requests_per_second=rate_limit,
+            redis_cache=redis_cache,
+            collector_name=collector_name
+        )
+        self.circuit_breaker = CircuitBreaker(
+            failure_threshold=5,
+            timeout_seconds=300,
+            half_open_max_calls=3,
+            half_open_success_threshold=2,
+            collector_name=collector_name,
+            redis_cache=redis_cache
+        )
         
         # HTTP session
         self.session: Optional[aiohttp.ClientSession] = None
@@ -155,15 +170,21 @@ class SocialCollector:
             logger.warning("FinBERT requested but transformers not available")
             
     async def connect(self):
-        """Establish HTTP session"""
+        """Establish HTTP session and load rate limiter & circuit breaker state"""
         if not self.session:
             timeout = aiohttp.ClientTimeout(total=30)
             self.session = aiohttp.ClientSession(timeout=timeout)
+            # Load previous state from Redis if available
+            await self.rate_limiter.load_state_from_redis()
+            await self.circuit_breaker.load_state_from_redis()
             logger.info(f"{self.collector_name} collector connected")
             
     async def disconnect(self):
-        """Close HTTP session"""
+        """Close HTTP session and save rate limiter & circuit breaker state"""
         if self.session:
+            # Save state to Redis before disconnecting
+            await self.rate_limiter.save_state_to_redis()
+            await self.circuit_breaker.save_state_to_redis()
             await self.session.close()
             self.session = None
             logger.info(f"{self.collector_name} collector disconnected")
@@ -363,7 +384,7 @@ class SocialCollector:
         method: str = "GET"
     ) -> Optional[Dict]:
         """
-        Make rate-limited API request
+        Make rate-limited API request with adaptive rate limiting and header parsing
         
         Args:
             endpoint: API endpoint
@@ -380,7 +401,8 @@ class SocialCollector:
             )
             return None
             
-        await self.rate_limiter.acquire()
+        # Apply rate limiting with endpoint tracking
+        await self.rate_limiter.wait(endpoint=endpoint)
         
         if not self.session:
             await self.connect()
@@ -392,13 +414,65 @@ class SocialCollector:
             headers["Authorization"] = f"Bearer {self.api_key}"
             
         try:
+            start_time = datetime.now(timezone.utc)
+            
             if method == "GET":
                 async with self.session.get(url, params=params, headers=headers) as response:
+                    response_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+                    
+                    # Parse rate limit headers
+                    self.rate_limiter.parse_rate_limit_headers(dict(response.headers), endpoint=endpoint)
+                    
+                    # Adjust rate based on response time and status
+                    self.rate_limiter.adjust_rate(response_time, status_code=response.status)
+                    
+                    if response.status == 429:
+                        # Handle rate limit
+                        retry_after = response.headers.get("Retry-After", "60")
+                        try:
+                            retry_seconds = int(retry_after)
+                        except ValueError:
+                            retry_seconds = 60
+                        
+                        self.rate_limiter._handle_rate_limit_violation(retry_seconds)
+                        logger.warning(
+                            f"{self.collector_name} rate limit hit - backing off",
+                            endpoint=endpoint,
+                            retry_after=retry_seconds,
+                            backoff_multiplier=self.rate_limiter.backoff_multiplier
+                        )
+                        return None
+                    
                     response.raise_for_status()
                     data = await response.json()
                     
             elif method == "POST":
                 async with self.session.post(url, json=params, headers=headers) as response:
+                    response_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+                    
+                    # Parse rate limit headers
+                    self.rate_limiter.parse_rate_limit_headers(dict(response.headers), endpoint=endpoint)
+                    
+                    # Adjust rate based on response time and status
+                    self.rate_limiter.adjust_rate(response_time, status_code=response.status)
+                    
+                    if response.status == 429:
+                        # Handle rate limit
+                        retry_after = response.headers.get("Retry-After", "60")
+                        try:
+                            retry_seconds = int(retry_after)
+                        except ValueError:
+                            retry_seconds = 60
+                        
+                        self.rate_limiter._handle_rate_limit_violation(retry_seconds)
+                        logger.warning(
+                            f"{self.collector_name} rate limit hit - backing off",
+                            endpoint=endpoint,
+                            retry_after=retry_seconds,
+                            backoff_multiplier=self.rate_limiter.backoff_multiplier
+                        )
+                        return None
+                    
                     response.raise_for_status()
                     data = await response.json()
             else:
@@ -406,6 +480,21 @@ class SocialCollector:
                 
             self.circuit_breaker.record_success()
             return data
+            
+        except aiohttp.ClientResponseError as e:
+            self.circuit_breaker.record_failure()
+            self.stats["errors"] += 1
+            logger.error(
+                f"{self.collector_name} request failed",
+                endpoint=endpoint,
+                status=e.status,
+                error=str(e)
+            )
+            
+            # Log collector health
+            await self._log_health(CollectorStatus.DEGRADED, f"Request error: {str(e)}")
+            
+            return None
             
         except Exception as e:
             self.circuit_breaker.record_failure()
@@ -417,13 +506,30 @@ class SocialCollector:
             )
             
             # Log collector health
-            await self.database.log_collector_health(
-                collector_name=self.collector_name,
-                status="error",
-                metadata={"endpoint": endpoint, "error": str(e)}
-            )
+            await self._log_health(CollectorStatus.DEGRADED, f"Request error: {str(e)}")
             
             return None
+            
+    async def _log_health(self, status: CollectorStatus, message: str = ""):
+        """
+        Log collector health status to database
+        
+        Args:
+            status: Collector status
+            message: Optional status message
+        """
+        try:
+            await self.database.log_collector_health(
+                collector_name=self.collector_name,
+                status=status.value,
+                error_msg=message if status != CollectorStatus.HEALTHY else None
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to log collector health",
+                collector=self.collector_name,
+                error=str(e)
+            )
             
     def get_status(self) -> Dict[str, Any]:
         """Get collector status"""

@@ -11,12 +11,17 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Response, status, Q
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import structlog
+import sys
+import os
+
+# Import Redis caching decorators
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from shared.cache_decorators import cached
 
 # Import the enhanced strategy activation API
 from strategy_activation_api import router as activation_router, set_activation_system
 
 logger = structlog.get_logger()
-
 
 def _safe_optional_float(value) -> Optional[float]:
     """Convert value to float when possible, otherwise return None."""
@@ -32,6 +37,23 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+# Cache key functions for Redis caching
+def _prediction_cache_key(symbol: str, force_refresh: bool) -> str:
+    """Generate cache key for price predictions"""
+    return f"prediction:{symbol}:{force_refresh}"
+
+
+def _review_history_cache_key(strategy_id: str, limit: int) -> str:
+    """Generate cache key for review history"""
+    return f"review_history:{strategy_id}:{limit}"
+
+
+def _dashboard_cache_key() -> str:
+    """Generate cache key for performance dashboard"""
+    return "dashboard:performance"
+
 
 # Request/Response Models
 class StrategyReviewRequest(BaseModel):
@@ -221,9 +243,10 @@ def create_strategy_api(strategy_service) -> FastAPI:
         strategy_id: str,
         limit: int = Query(default=10, ge=1, le=100)
     ):
-        """Get review history for a specific strategy"""
+        """Get review history for a specific strategy (Cached: 120s TTL)"""
         try:
-            history = await strategy_service.database.get_strategy_review_history(
+            # Use cached method for better performance
+            history = await strategy_service.get_cached_review_history(
                 strategy_id=strategy_id,
                 limit=limit
             )
@@ -747,6 +770,38 @@ def create_strategy_api(strategy_service) -> FastAPI:
             content=generate_latest(),
             media_type=CONTENT_TYPE_LATEST
         )
+    
+    @app.get("/api/v1/cache/stats")
+    async def get_cache_stats():
+        """Get Redis cache statistics"""
+        try:
+            stats = {
+                'service_stats': {
+                    'cache_hits': strategy_service.cache_hits,
+                    'cache_misses': strategy_service.cache_misses,
+                    'hit_rate': strategy_service.cache_hits / (strategy_service.cache_hits + strategy_service.cache_misses) 
+                                if (strategy_service.cache_hits + strategy_service.cache_misses) > 0 else 0.0
+                },
+                'redis_connected': strategy_service.redis_cache is not None and 
+                                   strategy_service.redis_cache._connected if strategy_service.redis_cache else False,
+                'cached_methods': {
+                    'dashboard_data': '60s TTL',
+                    'review_history': '120s TTL'
+                }
+            }
+            
+            return {
+                'success': True,
+                'stats': stats,
+                'timestamp': datetime.now(timezone.utc)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting cache stats: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get cache stats: {str(e)}"
+            )
     
     # ====================================================================
     # Strategy Generation API Endpoints

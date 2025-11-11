@@ -17,9 +17,21 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 import structlog
+import aio_pika
 
 from database import Database
 from collectors.onchain_collector import OnChainCollector, CollectorStatus
+
+# Import message schemas
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+from shared.message_schemas import (
+    OnChainMetricUpdate,
+    TrendDirection,
+    serialize_message,
+    RoutingKeys
+)
 
 logger = structlog.get_logger()
 
@@ -101,7 +113,8 @@ class GlassnodeCollector(OnChainCollector):
         database: Database,
         api_key: str,
         rate_limit: float = 1.0,  # Glassnode rate limit varies by tier
-        timeout: int = 30
+        timeout: int = 30,
+        rabbitmq_channel: Optional[aio_pika.Channel] = None
     ):
         """
         Initialize Glassnode collector
@@ -111,6 +124,7 @@ class GlassnodeCollector(OnChainCollector):
             api_key: Glassnode API key
             rate_limit: Requests per second
             timeout: Request timeout in seconds
+            rabbitmq_channel: Optional RabbitMQ channel for publishing metrics
         """
         super().__init__(
             database=database,
@@ -120,6 +134,7 @@ class GlassnodeCollector(OnChainCollector):
             rate_limit=rate_limit,
             timeout=timeout
         )
+        self.rabbitmq_channel = rabbitmq_channel
         
     async def collect(
         self,
@@ -284,6 +299,10 @@ class GlassnodeCollector(OnChainCollector):
                     value=metric_data["value"],
                     timestamp=metric_data["timestamp"].isoformat()
                 )
+                
+                # Publish to RabbitMQ if channel available
+                if self.rabbitmq_channel:
+                    await self._publish_onchain_metric(metric_data, symbol)
             else:
                 logger.warning(
                     f"Failed to store {metric_name} for {symbol}"
@@ -466,3 +485,158 @@ class GlassnodeCollector(OnChainCollector):
                 error=str(e)
             )
             return None
+    
+    async def _publish_onchain_metric(self, metric_data: Dict, symbol: str):
+        """
+        Publish on-chain metric update to RabbitMQ
+        
+        Args:
+            metric_data: Metric data dictionary
+            symbol: Cryptocurrency symbol
+        """
+        try:
+            metric_name = metric_data["metric_name"]
+            value = metric_data["value"]
+            
+            # Determine signal based on metric and value
+            signal = self._interpret_metric_signal(metric_name, value, symbol)
+            
+            # Calculate percentile rank (simplified - would need historical context)
+            percentile_rank = self._estimate_percentile(metric_name, value)
+            
+            # Build metric-specific fields
+            metric_fields = {}
+            if metric_name == "nvt":
+                metric_fields["nvt_ratio"] = value
+            elif metric_name == "mvrv":
+                metric_fields["mvrv_ratio"] = value
+            elif metric_name == "exchange_netflow":
+                metric_fields["exchange_netflow"] = value
+            elif metric_name == "exchange_inflow":
+                metric_fields["exchange_inflow"] = value
+            elif metric_name == "exchange_outflow":
+                metric_fields["exchange_outflow"] = value
+            elif metric_name == "active_addresses":
+                metric_fields["active_addresses"] = int(value)
+            elif metric_name == "hash_rate":
+                metric_fields["hash_rate"] = value
+            elif metric_name == "difficulty":
+                metric_fields["difficulty"] = value
+            
+            # Create OnChainMetricUpdate message
+            update = OnChainMetricUpdate(
+                metric_id=f"glassnode_{symbol.lower()}_{metric_name}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+                symbol=symbol,
+                metric_name=metric_name,
+                metric_value=value,
+                **metric_fields,
+                percentile_rank=percentile_rank,
+                interpretation=self._generate_interpretation(metric_name, value, signal),
+                signal=signal,
+                timestamp=metric_data["timestamp"],
+                source="glassnode",
+                metadata=metric_data.get("metadata", {})
+            )
+            
+            # Determine routing key based on metric type
+            if metric_name in ["nvt"]:
+                routing_key = RoutingKeys.ONCHAIN_NVT
+            elif metric_name in ["mvrv"]:
+                routing_key = RoutingKeys.ONCHAIN_MVRV
+            elif metric_name in ["exchange_netflow", "exchange_inflow", "exchange_outflow"]:
+                routing_key = RoutingKeys.ONCHAIN_EXCHANGE_FLOW
+            else:
+                routing_key = RoutingKeys.ONCHAIN_METRIC
+            
+            # Publish to RabbitMQ
+            message = aio_pika.Message(
+                body=serialize_message(update).encode(),
+                content_type="application/json",
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+            )
+            
+            await self.rabbitmq_channel.default_exchange.publish(
+                message,
+                routing_key=routing_key
+            )
+            
+            logger.debug(
+                "Published on-chain metric to RabbitMQ",
+                symbol=symbol,
+                metric=metric_name,
+                value=value,
+                routing_key=routing_key
+            )
+            
+        except Exception as e:
+            logger.error(
+                "Failed to publish on-chain metric",
+                symbol=symbol,
+                metric=metric_data.get("metric_name"),
+                error=str(e)
+            )
+    
+    def _interpret_metric_signal(self, metric_name: str, value: float, symbol: str) -> TrendDirection:
+        """Interpret metric value as bullish/bearish/neutral signal"""
+        if metric_name == "nvt":
+            # Lower NVT = undervalued (bullish), higher = overvalued (bearish)
+            if value < 40:
+                return TrendDirection.BULLISH
+            elif value > 95:
+                return TrendDirection.BEARISH
+            else:
+                return TrendDirection.NEUTRAL
+                
+        elif metric_name == "mvrv":
+            # MVRV < 1 = undervalued (bullish), > 3.5 = overvalued (bearish)
+            if value < 1.0:
+                return TrendDirection.BULLISH
+            elif value > 3.5:
+                return TrendDirection.BEARISH
+            else:
+                return TrendDirection.NEUTRAL
+                
+        elif metric_name == "exchange_netflow":
+            # Negative netflow (outflow > inflow) = bullish accumulation
+            # Positive netflow (inflow > outflow) = bearish distribution
+            if value < -1000:  # Significant outflow
+                return TrendDirection.BULLISH
+            elif value > 1000:  # Significant inflow
+                return TrendDirection.BEARISH
+            else:
+                return TrendDirection.NEUTRAL
+                
+        else:
+            return TrendDirection.NEUTRAL
+    
+    def _estimate_percentile(self, metric_name: str, value: float) -> Optional[float]:
+        """Estimate historical percentile rank (simplified)"""
+        # In production, this would query historical data
+        # For now, return None or use simple heuristics
+        if metric_name == "nvt":
+            if value < 30:
+                return 10.0
+            elif value < 50:
+                return 35.0
+            elif value < 80:
+                return 60.0
+            else:
+                return 85.0
+        return None
+    
+    def _generate_interpretation(self, metric_name: str, value: float, signal: TrendDirection) -> str:
+        """Generate human-readable interpretation"""
+        interpretations = {
+            ("nvt", TrendDirection.BULLISH): f"NVT ratio at {value:.1f} suggests undervaluation - potential accumulation phase",
+            ("nvt", TrendDirection.BEARISH): f"NVT ratio at {value:.1f} indicates overvaluation - potential distribution phase",
+            ("nvt", TrendDirection.NEUTRAL): f"NVT ratio at {value:.1f} within normal range",
+            ("mvrv", TrendDirection.BULLISH): f"MVRV at {value:.2f} suggests market undervalued - accumulation opportunity",
+            ("mvrv", TrendDirection.BEARISH): f"MVRV at {value:.2f} indicates overheated market - caution advised",
+            ("mvrv", TrendDirection.NEUTRAL): f"MVRV at {value:.2f} within normal range",
+            ("exchange_netflow", TrendDirection.BULLISH): f"Net outflow of {abs(value):.0f} coins - bullish accumulation pattern",
+            ("exchange_netflow", TrendDirection.BEARISH): f"Net inflow of {value:.0f} coins - bearish distribution pattern",
+            ("exchange_netflow", TrendDirection.NEUTRAL): f"Exchange netflow at {value:.0f} - balanced activity",
+        }
+        
+        key = (metric_name, signal)
+        return interpretations.get(key, f"{metric_name} at {value}")

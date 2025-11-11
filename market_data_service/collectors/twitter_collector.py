@@ -14,9 +14,21 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Any, List
 import structlog
+import aio_pika
 
 from database import Database
 from collectors.social_collector import SocialCollector, SentimentScore
+
+# Import message schemas
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+from shared.message_schemas import (
+    SocialSentimentUpdate,
+    TrendDirection,
+    serialize_message,
+    RoutingKeys
+)
 
 logger = structlog.get_logger()
 
@@ -65,7 +77,8 @@ class TwitterCollector(SocialCollector):
         api_secret: str,
         bearer_token: str,
         rate_limit: float = 1.0,
-        use_finbert: bool = False
+        use_finbert: bool = False,
+        rabbitmq_channel: Optional[aio_pika.Channel] = None
     ):
         """
         Initialize Twitter collector
@@ -77,6 +90,7 @@ class TwitterCollector(SocialCollector):
             bearer_token: Twitter bearer token for API v2
             rate_limit: Requests per second
             use_finbert: Use FinBERT for sentiment analysis
+            rabbitmq_channel: Optional RabbitMQ channel for publishing sentiment
         """
         super().__init__(
             collector_name="twitter",
@@ -89,6 +103,7 @@ class TwitterCollector(SocialCollector):
         
         self.api_secret = api_secret
         self.bearer_token = bearer_token
+        self.rabbitmq_channel = rabbitmq_channel
         
         # Streaming state
         self.stream_active = False
@@ -382,6 +397,10 @@ class TwitterCollector(SocialCollector):
                 
                 if not success:
                     logger.warning("Failed to store tweet sentiment", symbol=symbol)
+                else:
+                    # Publish to RabbitMQ if channel available
+                    if self.rabbitmq_channel:
+                        await self._publish_sentiment_update(sentiment_data, symbol)
                     
             return {
                 "text": text,
@@ -426,3 +445,78 @@ class TwitterCollector(SocialCollector):
         logger.info("Twitter streaming not yet fully implemented")
         # TODO: Implement streaming API connection
         # This would connect to the streaming endpoint and process tweets in real-time
+    
+    async def _publish_sentiment_update(self, sentiment_data: Dict, symbol: str):
+        """
+        Publish social sentiment update to RabbitMQ
+        
+        Args:
+            sentiment_data: Sentiment data dictionary
+            symbol: Cryptocurrency symbol
+        """
+        try:
+            # Determine signal based on sentiment score
+            sentiment_score = sentiment_data["sentiment_score"]
+            if sentiment_score >= 0.3:
+                signal = TrendDirection.BULLISH
+            elif sentiment_score <= -0.3:
+                signal = TrendDirection.BEARISH
+            else:
+                signal = TrendDirection.NEUTRAL
+            
+            # Calculate social volume (single tweet = 1, but weighted by engagement)
+            engagement_score = sentiment_data.get("engagement_score", 0.0)
+            social_volume = max(1, int(engagement_score * 10))  # Scale engagement
+            
+            # Create SocialSentimentUpdate message
+            update = SocialSentimentUpdate(
+                update_id=f"twitter_{symbol.lower()}_{sentiment_data.get('post_id', '')}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+                symbol=symbol,
+                source="twitter",
+                sentiment_score=sentiment_score,
+                social_volume=social_volume,
+                engagement_metrics={
+                    "likes": sentiment_data.get("like_count", 0),
+                    "retweets": sentiment_data.get("retweet_count", 0),
+                    "replies": sentiment_data.get("reply_count", 0),
+                    "engagement_score": engagement_score
+                },
+                influencer_sentiment=sentiment_score if sentiment_data.get("is_influencer") else None,
+                trending_topics=[symbol],
+                signal=signal,
+                confidence=abs(sentiment_score),
+                timestamp=sentiment_data["timestamp"],
+                metadata={
+                    "author": sentiment_data.get("author_username"),
+                    "is_influencer": sentiment_data.get("is_influencer", False),
+                    "tweet_id": sentiment_data.get("post_id"),
+                    "text_preview": sentiment_data["text"][:100] if len(sentiment_data["text"]) > 100 else sentiment_data["text"]
+                }
+            )
+            
+            # Publish to RabbitMQ
+            message = aio_pika.Message(
+                body=serialize_message(update).encode(),
+                content_type="application/json",
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+            )
+            
+            await self.rabbitmq_channel.default_exchange.publish(
+                message,
+                routing_key=RoutingKeys.SENTIMENT_TWITTER
+            )
+            
+            logger.debug(
+                "Published Twitter sentiment to RabbitMQ",
+                symbol=symbol,
+                sentiment=sentiment_score,
+                author=sentiment_data.get("author_username"),
+                is_influencer=sentiment_data.get("is_influencer")
+            )
+            
+        except Exception as e:
+            logger.error(
+                "Failed to publish Twitter sentiment",
+                symbol=symbol,
+                error=str(e)
+            )

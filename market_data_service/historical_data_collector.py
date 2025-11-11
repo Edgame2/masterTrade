@@ -11,6 +11,10 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import time
 import structlog
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from shared.cache_decorators import cached, simple_key
 
 from config import settings
 from database import Database
@@ -20,10 +24,13 @@ logger = structlog.get_logger()
 class HistoricalDataCollector:
     """Collects historical market data from Binance REST API"""
     
-    def __init__(self, database: Database):
+    def __init__(self, database: Database, redis_cache=None):
         self.database = database
+        self.redis_cache = redis_cache
         self.session: Optional[aiohttp.ClientSession] = None
         self.rate_limit_delay = 0.1  # 100ms between requests
+        self.cache_hits = 0
+        self.cache_misses = 0
         
     async def __aenter__(self):
         """Async context manager entry"""
@@ -97,6 +104,7 @@ class HistoricalDataCollector:
         }
         return interval_map.get(interval, 60 * 1000)  # Default to 1 minute
         
+    @cached(prefix='historical_klines', ttl=300, key_func=simple_key(0, 1))  # Cache for 5 minutes
     async def fetch_historical_klines(
         self,
         symbol: str,

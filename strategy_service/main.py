@@ -8,6 +8,7 @@ genetic programming, and advanced optimization techniques.
 import asyncio
 import json
 import os
+import sys
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
@@ -18,6 +19,11 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import aio_pika
+
+# Import Redis cache manager
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from shared.redis_client import RedisCacheManager
+from shared.cache_decorators import cached, simple_key
 
 # Robust imports with fallbacks
 try:
@@ -68,7 +74,8 @@ component_imports = [
     ('automatic_strategy_activation', 'AutomaticStrategyActivationManager'),
     ('crypto_selection_engine', 'CryptoSelectionEngine'),
     ('automatic_pipeline', 'AutomaticStrategyPipeline'),  # NEW: Automatic generation & backtesting
-    ('price_prediction_service', 'PricePredictionService')
+    ('price_prediction_service', 'PricePredictionService'),
+    ('market_signal_consumer', 'MarketSignalConsumer')  # NEW: Real-time signal consumer
 ]
 
 # Create mock classes for missing components
@@ -80,6 +87,7 @@ create_strategy_api = lambda app: app
 AutomaticStrategyActivationManager = type('AutomaticStrategyActivationManager', (), {'__init__': lambda self, *args, **kwargs: None})
 CryptoSelectionEngine = type('CryptoSelectionEngine', (), {'__init__': lambda self, *args, **kwargs: None})
 AutomaticStrategyPipeline = type('AutomaticStrategyPipeline', (), {'__init__': lambda self, *args, **kwargs: None})  # NEW
+MarketSignalConsumer = type('MarketSignalConsumer', (), {'__init__': lambda self, *args, **kwargs: None, 'start': lambda self: None, 'stop': lambda self: None})  # NEW
 
 
 class _DefaultPricePredictionService:
@@ -246,8 +254,14 @@ class StrategyService:
         self.exchanges: Dict[str, aio_pika.Exchange] = {}
         self.strategy_manager = StrategyManager()
         
+        # Redis cache
+        self.redis_cache = None
+        self.cache_hits = 0
+        self.cache_misses = 0
+        
         # Enhanced market data consumer for comprehensive data access
         self.market_data_consumer: Optional[EnhancedMarketDataConsumer] = None
+        self.market_signal_consumer = None  # NEW: Market signal consumer for real-time signals
         
         # Market data cache for strategy decisions
         self.market_data_cache: Dict[str, List[Dict]] = {}  # symbol -> recent data points
@@ -255,6 +269,13 @@ class StrategyService:
         self.correlation_data: Dict = {}
         self.stock_indices: Dict[str, Dict] = {}
         self.current_prices: Dict[str, Dict] = {}
+        
+        # NEW: Signal caches for real-time data from RabbitMQ
+        self.market_signals_cache: Dict[str, List[Dict]] = {}  # symbol -> recent signals
+        self.whale_alerts_cache: Dict[str, List[Dict]] = {}    # symbol -> recent whale alerts
+        self.sentiment_cache: Dict[str, Dict] = {}              # symbol -> {source: data}
+        self.onchain_metrics_cache: Dict[str, Dict] = {}        # symbol -> {metric: data}
+        self.institutional_flow_cache: Dict[str, List[Dict]] = {}  # symbol -> recent flows
         
         # AI/ML Components
         self.transformer_model = None
@@ -276,10 +297,36 @@ class StrategyService:
             await self.database.connect()
             logger.info("Database connected successfully")
             
+            # Initialize Redis cache
+            try:
+                redis_url = getattr(settings, 'REDIS_URL', 'redis://redis:6379')
+                self.redis_cache = RedisCacheManager(redis_url=redis_url)
+                connected = await self.redis_cache.connect()
+                if connected:
+                    logger.info("Redis cache connected successfully")
+                else:
+                    logger.warning("Redis cache unavailable - caching disabled")
+                    self.redis_cache = None
+            except Exception as e:
+                logger.warning("Redis initialization failed - caching disabled", error=str(e))
+                self.redis_cache = None
+            
             # Initialize RabbitMQ (optional for development)
             try:
                 await self._init_rabbitmq()
                 logger.info("RabbitMQ connected successfully")
+                
+                # Initialize market signal consumer (requires RabbitMQ)
+                if self.rabbitmq_channel:
+                    try:
+                        self.market_signal_consumer = MarketSignalConsumer(
+                            rabbitmq_channel=self.rabbitmq_channel,
+                            strategy_service=self
+                        )
+                        await self.market_signal_consumer.start()
+                        logger.info("Market signal consumer started - receiving real-time signals")
+                    except Exception as e:
+                        logger.warning("Market signal consumer initialization failed", error=str(e))
             except Exception as e:
                 logger.warning("RabbitMQ unavailable, continuing without messaging", error=str(e))
             
@@ -1058,10 +1105,68 @@ class StrategyService:
             logger.error(f"Error in manual strategy review: {e}")
             raise
     
+    # Cached API helper methods for performance optimization
+    @cached(prefix='dashboard_perf', ttl=60, key_func=lambda self: 'dashboard')
+    async def get_cached_dashboard_data(self) -> Dict:
+        """Get cached performance dashboard data (60s TTL)"""
+        try:
+            # Get active strategies
+            active_strategies = await self.database.get_active_strategies()
+            
+            dashboard_data = {
+                "total_active_strategies": len(active_strategies),
+                "performance_overview": {},
+                "top_performers": [],
+                "underperformers": [],
+                "market_regime": getattr(self.daily_reviewer, 'current_market_regime', 'unknown') if self.daily_reviewer else 'unknown',
+                "last_update": datetime.now(timezone.utc)
+            }
+            
+            # Track cache hit/miss
+            if self.redis_cache:
+                self.cache_hits += 1
+            
+            return dashboard_data
+            
+        except Exception as e:
+            logger.error(f"Error getting cached dashboard data: {e}")
+            if self.redis_cache:
+                self.cache_misses += 1
+            raise
+    
+    @cached(prefix='review_history', ttl=120, key_func=lambda self, strategy_id, limit: f"{strategy_id}:{limit}")
+    async def get_cached_review_history(self, strategy_id: str, limit: int = 10) -> List[Dict]:
+        """Get cached review history for a strategy (120s TTL)"""
+        try:
+            history = await self.database.get_strategy_review_history(
+                strategy_id=strategy_id,
+                limit=limit
+            )
+            
+            # Track cache hit/miss
+            if self.redis_cache:
+                self.cache_hits += 1
+            
+            return history if history else []
+            
+        except Exception as e:
+            logger.error(f"Error getting cached review history: {e}")
+            if self.redis_cache:
+                self.cache_misses += 1
+            raise
+    
     async def stop(self):
         """Stop the service gracefully"""
         logger.info("Stopping enhanced strategy service...")
         self.running = False
+        
+        # Stop market signal consumer
+        if self.market_signal_consumer:
+            try:
+                await self.market_signal_consumer.stop()
+                logger.info("Market signal consumer stopped")
+            except Exception as e:
+                logger.error("Error stopping market signal consumer", error=str(e))
         
         # Cancel consumer tasks
         for task in self.consumer_tasks:
@@ -1080,6 +1185,14 @@ class StrategyService:
         # Close connections
         if self.rabbitmq_connection:
             await self.rabbitmq_connection.close()
+        
+        # Close Redis connection
+        if self.redis_cache:
+            try:
+                await self.redis_cache.close()
+                logger.info("Redis cache connection closed")
+            except Exception as e:
+                logger.error("Error closing Redis cache", error=str(e))
         
         await self.database.disconnect()
         
