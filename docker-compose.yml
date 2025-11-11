@@ -126,7 +126,8 @@ services:
       - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       - REDIS_URL=redis://redis:6379
       - LOG_LEVEL=INFO
-      - PROMETHEUS_PORT=8006
+      - STRATEGY_API_PORT=8006
+      - PROMETHEUS_PORT=9091
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -155,12 +156,15 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mastertrade}
       - POSTGRES_APPLICATION_NAME=order_executor
       - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379
       - BINANCE_API_KEY=${BINANCE_API_KEY}
       - BINANCE_API_SECRET=${BINANCE_API_SECRET}
       - LOG_LEVEL=INFO
       - PROMETHEUS_PORT=8002
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:172.18.0.1"
@@ -185,10 +189,13 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mastertrade}
       - POSTGRES_APPLICATION_NAME=risk_manager
       - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379
       - LOG_LEVEL=INFO
       - PROMETHEUS_PORT=8003
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:172.18.0.1"
@@ -262,12 +269,15 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mastertrade}
       - POSTGRES_APPLICATION_NAME=api_gateway
       - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379
       - JWT_SECRET=${JWT_SECRET}
       - LOG_LEVEL=INFO
     ports:
       - "8080:8080"
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:172.18.0.1"

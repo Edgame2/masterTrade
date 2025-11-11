@@ -344,6 +344,22 @@ class StrategyService:
             except Exception as e:
                 logger.warning("AI/ML components unavailable", error=str(e))
             
+            # Initialize automatic strategy activation manager (CRITICAL)
+            # This must happen regardless of AI/ML component status
+            try:
+                risk_manager_url = getattr(settings, "RISK_MANAGER_URL", "http://risk_manager:8003")
+                logger.info(f"Initializing activation manager with risk_manager_url: {risk_manager_url}")
+                self.activation_manager = AutomaticStrategyActivationManager(
+                    self.database,
+                    risk_manager_url=risk_manager_url
+                )
+                await self.activation_manager.initialize()
+                logger.info(f"Activation manager initialized. Has goal_selector: {hasattr(self.activation_manager, 'goal_selector')}")
+                logger.info(f"Automatic strategy activation manager initialized with goal-based selection")
+            except Exception as e:
+                logger.error(f"Failed to initialize activation manager: {e}")
+                self.activation_manager = None
+            
             # Initialize strategy generation manager (always)
             # This is critical for UI-driven strategy generation
             try:
@@ -424,11 +440,6 @@ class StrategyService:
                     strategy_data_manager=getattr(self, 'strategy_data_manager', None)
                 )
                 logger.info("Daily strategy reviewer initialized")
-            
-            # Initialize automatic strategy activation manager (legacy)
-            self.activation_manager = AutomaticStrategyActivationManager(self.database)
-            await self.activation_manager.initialize()
-            logger.info("Automatic strategy activation manager initialized")
             
             # Initialize enhanced strategy activation system (new)
             from enhanced_strategy_activation import EnhancedStrategyActivationSystem

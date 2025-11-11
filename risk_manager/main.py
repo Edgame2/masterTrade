@@ -23,6 +23,7 @@ from position_sizing import PositionSizingEngine, PositionSizeRequest, PositionS
 from stop_loss_manager import StopLossManager, StopLossConfig, StopLossType, StopLossOrder
 from portfolio_risk_controller import PortfolioRiskController, RiskMetrics, RiskAlert, RiskLevel
 from advanced_risk_service import get_advanced_risk_service
+from goal_tracking_service import GoalTrackingService
 
 logger = structlog.get_logger()
 
@@ -99,6 +100,7 @@ position_sizing_engine = PositionSizingEngine(
 )
 stop_loss_manager = StopLossManager(database)
 portfolio_controller = PortfolioRiskController(database)
+goal_tracking_service = GoalTrackingService(database)
 
 app = FastAPI(
     title="MasterTrade Risk Management API",
@@ -122,6 +124,10 @@ async def startup_event():
         logger.info("Starting Risk Management API")
         await database.initialize()
         await price_prediction_client.initialize()
+        
+        # Start goal tracking service
+        await goal_tracking_service.start()
+        
         logger.info("Risk Management API started successfully")
     except Exception as e:
         logger.error(f"Failed to start Risk Management API: {e}")
@@ -132,6 +138,10 @@ async def shutdown_event():
     """Cleanup on shutdown"""
     try:
         logger.info("Shutting down Risk Management API")
+        
+        # Stop goal tracking service
+        await goal_tracking_service.stop()
+        
         await database.close()
         await price_prediction_client.close()
         logger.info("Risk Management API shutdown completed")
@@ -682,6 +692,132 @@ async def update_risk_limits(
         
     except Exception as e:
         logger.error(f"Error updating risk limits: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Goal Tracking Endpoints
+
+@app.get("/goals/status")
+async def get_goals_status(db: RiskPostgresDatabase = Depends(get_database)):
+    """Get current status of all financial goals"""
+    try:
+        goals = await db.get_all_goals_status()
+        
+        return {
+            "success": True,
+            "goals": goals,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting goals status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/goals/history/{goal_type}")
+async def get_goal_history(
+    goal_type: str,
+    days: int = Query(default=30, ge=1, le=365, description="Number of days of history"),
+    db: RiskPostgresDatabase = Depends(get_database)
+):
+    """Get historical progress for a specific goal"""
+    try:
+        # Validate goal_type
+        valid_types = ['monthly_return', 'monthly_income', 'portfolio_value']
+        if goal_type not in valid_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid goal_type. Must be one of: {', '.join(valid_types)}"
+            )
+        
+        history = await db.get_goal_history(goal_type, days)
+        
+        return {
+            "success": True,
+            "goal_type": goal_type,
+            "history": history,
+            "days": days
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting goal history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/goals/manual-snapshot")
+async def trigger_manual_snapshot(db: RiskPostgresDatabase = Depends(get_database)):
+    """Manually trigger a goal tracking snapshot (for testing/admin use)"""
+    try:
+        await goal_tracking_service.manual_snapshot()
+        
+        return {
+            "success": True,
+            "message": "Manual goal snapshot completed",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error triggering manual snapshot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/goals/targets")
+async def update_goal_targets(
+    monthly_return_target: Optional[float] = Query(None, ge=0.1, le=50, description="Monthly return target (%)"),
+    monthly_income_target: Optional[float] = Query(None, ge=1, le=1000000, description="Monthly income target ($)"),
+    portfolio_value_target: Optional[float] = Query(None, ge=100, le=10000000, description="Portfolio value target ($)"),
+    db: RiskPostgresDatabase = Depends(get_database)
+):
+    """Update financial goal targets (admin only)"""
+    try:
+        if all(v is None for v in [monthly_return_target, monthly_income_target, portfolio_value_target]):
+            raise HTTPException(
+                status_code=400,
+                detail="At least one target must be provided"
+            )
+        
+        await goal_tracking_service.update_goal_targets(
+            monthly_return_target=monthly_return_target,
+            monthly_income_target=monthly_income_target,
+            portfolio_value_target=portfolio_value_target
+        )
+        
+        updates = {}
+        if monthly_return_target is not None:
+            updates['monthly_return_target'] = monthly_return_target
+        if monthly_income_target is not None:
+            updates['monthly_income_target'] = monthly_income_target
+        if portfolio_value_target is not None:
+            updates['portfolio_value_target'] = portfolio_value_target
+        
+        return {
+            "success": True,
+            "updates": updates,
+            "message": "Goal targets updated successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating goal targets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/goals/record-profit")
+async def record_realized_profit(
+    profit: float = Query(..., description="Realized profit amount (positive or negative)"),
+    db: RiskPostgresDatabase = Depends(get_database)
+):
+    """Record realized profit for monthly income tracking"""
+    try:
+        await goal_tracking_service.record_realized_profit(profit)
+        
+        return {
+            "success": True,
+            "profit_recorded": profit,
+            "month_to_date": goal_tracking_service.income_month_to_date,
+            "message": "Profit recorded successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error recording profit: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

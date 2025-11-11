@@ -3,6 +3,9 @@ Automatic Strategy Activation Manager
 
 This module manages the automatic activation of the best performing strategies
 based on the MAX_ACTIVE_STRATEGIES setting from the database.
+
+Integrates with goal-based strategy selection to adjust activation criteria
+based on financial goal progress.
 """
 
 import asyncio
@@ -12,6 +15,7 @@ from dataclasses import dataclass, field
 import structlog
 
 from postgres_database import Database
+from goal_based_selector import GoalBasedStrategySelector
 
 logger = structlog.get_logger()
 
@@ -45,11 +49,14 @@ class AutomaticStrategyActivationManager:
     - Logs all activation/deactivation decisions
     """
     
-    def __init__(self, database: Database):
+    def __init__(self, database: Database, risk_manager_url: str = "http://risk_manager:8003"):
         self.database = database
         self.max_active_strategies = 2  # Default value
         self.min_stability_hours = 4    # Minimum hours between activation changes
         self.last_activation_check = None
+        
+        # Goal-based strategy selector
+        self.goal_selector = GoalBasedStrategySelector(risk_manager_url=risk_manager_url)
         
     async def initialize(self):
         """Initialize the activation manager"""
@@ -575,12 +582,12 @@ class AutomaticStrategyActivationManager:
                                      market_alignment: float,
                                      risk_score: float,
                                      sentiment_alignment: float) -> float:
-        """Calculate overall strategy score for ranking"""
+        """Calculate overall strategy score for ranking with goal-based adjustments"""
         try:
             performance_score = performance_metrics.get('performance_score', 0)
             
             # Weighted overall score
-            overall_score = (
+            base_score = (
                 performance_score * 0.35 +      # 35% recent performance
                 backtest_score * 0.20 +         # 20% backtest quality
                 market_alignment * 0.15 +       # 15% market alignment
@@ -588,7 +595,31 @@ class AutomaticStrategyActivationManager:
                 sentiment_alignment * 0.15      # 15% sentiment alignment
             )
             
-            return max(0.0, min(10.0, overall_score))  # Scale 0-10
+            # Apply goal-based adjustment
+            try:
+                strategy_metrics = {
+                    "sharpe_ratio": performance_metrics.get("sharpe_ratio", 1.0),
+                    "volatility": performance_metrics.get("volatility", 0.02),
+                    "max_drawdown": performance_metrics.get("max_drawdown", 0.0)
+                }
+                
+                adjusted_score = await self.goal_selector.adjust_strategy_score(
+                    strategy_id="current",
+                    base_score=base_score,
+                    strategy_metrics=strategy_metrics
+                )
+                
+                logger.debug(
+                    "Applied goal-based score adjustment",
+                    base_score=base_score,
+                    adjusted_score=adjusted_score
+                )
+                
+                return max(0.0, min(10.0, adjusted_score))  # Scale 0-10
+                
+            except Exception as e:
+                logger.warning(f"Goal-based adjustment failed, using base score: {e}")
+                return max(0.0, min(10.0, base_score))  # Fallback to base score
             
         except Exception as e:
             logger.error(f"Error calculating overall score: {e}")

@@ -22,8 +22,8 @@ COPY strategy_service/ .
 RUN adduser --disabled-password --gecos '' appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Expose port for metrics
-EXPOSE 8001
+# Expose port for API and metrics
+EXPOSE 8006 9091
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

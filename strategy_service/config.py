@@ -47,7 +47,8 @@ class Settings(BaseSettings):
     
     # Service configuration
     SERVICE_NAME: str = "strategy_service"
-    PROMETHEUS_PORT: int = 8001
+    STRATEGY_API_PORT: int = 8006  # FastAPI REST API port
+    PROMETHEUS_PORT: int = 9091    # Prometheus metrics port
     
     # Strategy configuration
     DEFAULT_LOOKBACK_PERIOD: int = 100

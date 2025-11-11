@@ -17,6 +17,8 @@ import structlog
 
 from config import settings, get_asset_class, get_risk_multiplier
 from database import RiskPostgresDatabase
+from adaptive_risk_limits import AdaptiveRiskLimits
+from goal_based_drawdown import GoalBasedDrawdownProtector, DrawdownAction
 
 logger = structlog.get_logger()
 
@@ -122,9 +124,40 @@ class PortfolioRiskController:
     - Automated risk rebalancing
     """
     
-    def __init__(self, database: RiskPostgresDatabase):
+    def __init__(self, database: RiskPostgresDatabase, enable_adaptive_risk: bool = True, enable_drawdown_protection: bool = True):
         self.database = database
         self.current_alerts: Dict[str, RiskAlert] = {}
+        
+        # Initialize adaptive risk limits
+        self.enable_adaptive_risk = enable_adaptive_risk
+        self.adaptive_risk_limits = None
+        if enable_adaptive_risk:
+            try:
+                base_risk = getattr(settings, 'MAX_PORTFOLIO_RISK_PERCENT', 10.0)
+                self.adaptive_risk_limits = AdaptiveRiskLimits(database, base_risk_percent=base_risk)
+                logger.info("Adaptive risk limits enabled",
+                           base_risk_percent=base_risk)
+            except Exception as e:
+                logger.error(f"Failed to initialize adaptive risk limits: {e}")
+                self.enable_adaptive_risk = False
+        
+        # Initialize goal-based drawdown protection
+        self.enable_drawdown_protection = enable_drawdown_protection
+        self.drawdown_protector = None
+        if enable_drawdown_protection:
+            try:
+                self.drawdown_protector = GoalBasedDrawdownProtector(
+                    database,
+                    normal_limit_percent=5.0,
+                    protective_limit_percent=2.0,
+                    milestone_threshold=0.90
+                )
+                logger.info("Goal-based drawdown protection enabled",
+                           normal_limit=5.0,
+                           protective_limit=2.0)
+            except Exception as e:
+                logger.error(f"Failed to initialize drawdown protection: {e}")
+                self.enable_drawdown_protection = False
         
     async def calculate_portfolio_risk(self) -> RiskMetrics:
         """
@@ -258,6 +291,92 @@ class PortfolioRiskController:
         except Exception as e:
             logger.error(f"Error checking risk limits: {e}")
             return []
+    
+    async def get_portfolio_risk_limit(self) -> float:
+        """
+        Get current portfolio risk limit percentage
+        
+        Uses adaptive risk limits if enabled, otherwise returns base limit
+        
+        Returns:
+            Portfolio risk limit as percentage (e.g., 10.0 for 10%)
+        """
+        try:
+            if self.enable_adaptive_risk and self.adaptive_risk_limits:
+                # Get dynamically adjusted risk limit based on goal progress
+                risk_limit = await self.adaptive_risk_limits.get_current_risk_limit()
+                logger.debug("Using adaptive risk limit",
+                           risk_limit_percent=f"{risk_limit:.1f}%")
+                return risk_limit
+            else:
+                # Use static base risk limit from settings
+                base_risk = getattr(settings, 'MAX_PORTFOLIO_RISK_PERCENT', 10.0)
+                logger.debug("Using static risk limit",
+                           risk_limit_percent=f"{base_risk:.1f}%")
+                return base_risk
+                
+        except Exception as e:
+            logger.error(f"Error getting portfolio risk limit: {e}")
+            # Fallback to conservative base limit
+            return 10.0
+    
+    async def check_drawdown_protection(self, current_portfolio_value: float) -> Dict:
+        """
+        Check drawdown protection and get required actions
+        
+        Args:
+            current_portfolio_value: Current total portfolio value
+            
+        Returns:
+            Dict with drawdown status and required actions:
+            - stance: "normal", "protective", or "breached"
+            - monthly_limit_percent: Applicable drawdown limit
+            - current_drawdown_percent: Current month's drawdown
+            - is_breached: Boolean indicating if limit is breached
+            - required_actions: List of actions (pause_new, reduce_positions, close_all, none)
+            - reason: Human-readable explanation
+        """
+        try:
+            if not self.enable_drawdown_protection or not self.drawdown_protector:
+                # Drawdown protection disabled
+                return {
+                    "enabled": False,
+                    "stance": "disabled",
+                    "monthly_limit_percent": 5.0,
+                    "current_drawdown_percent": 0.0,
+                    "is_breached": False,
+                    "required_actions": ["none"],
+                    "reason": "Drawdown protection is disabled"
+                }
+            
+            # Get drawdown protection status
+            status = await self.drawdown_protector.get_current_protection_status(current_portfolio_value)
+            status["enabled"] = True
+            
+            # Log if breached
+            if status["is_breached"]:
+                logger.warning(
+                    "Drawdown protection breached",
+                    stance=status["stance"],
+                    limit=status["monthly_limit_percent"],
+                    actual=status["current_drawdown_percent"],
+                    actions=status["required_actions"]
+                )
+            
+            return status
+            
+        except Exception as e:
+            logger.error(f"Error checking drawdown protection: {e}")
+            # Return safe default on error
+            return {
+                "enabled": False,
+                "stance": "error",
+                "monthly_limit_percent": 5.0,
+                "current_drawdown_percent": 0.0,
+                "is_breached": False,
+                "required_actions": ["none"],
+                "reason": f"Error checking drawdown protection: {str(e)}"
+            }
     
     async def suggest_risk_rebalancing(self) -> List[Dict]:
         """

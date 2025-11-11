@@ -3499,6 +3499,276 @@ async def api_v1_social_influencers(request):
             content_type='application/json'
         )
 
+# ==========================================
+# WebSocket Real-Time Endpoints
+# ==========================================
+
+# Global set to track active WebSocket connections for whale alerts
+whale_alert_connections = set()
+
+# Store last seen whale transaction timestamp to avoid duplicates
+last_whale_tx_timestamp = {}
+
+async def websocket_whale_alerts(request):
+    """
+    WebSocket endpoint for real-time whale transaction alerts
+    
+    ws://market_data_service:8000/ws/whale-alerts?api_key=YOUR_API_KEY
+    
+    Query Parameters:
+        api_key: Authentication API key (required)
+        min_amount: Minimum transaction amount in USD (optional, default: 1000000)
+        symbol: Filter by specific symbol (optional, e.g., BTC, ETH)
+    
+    Message Format (JSON):
+        {
+            "type": "whale_alert",
+            "data": {
+                "transaction_hash": "0x...",
+                "symbol": "BTC",
+                "amount": 1500000.50,
+                "amount_usd": 1500000.50,
+                "from_address": "0x...",
+                "to_address": "0x...",
+                "from_entity": "Binance",
+                "to_entity": "Unknown Wallet",
+                "transaction_type": "exchange_outflow",
+                "timestamp": "2025-11-11T14:00:00Z"
+            },
+            "timestamp": "2025-11-11T14:00:01Z"
+        }
+    
+    Connection Lifecycle:
+        1. Client connects with API key
+        2. Server validates API key
+        3. Server sends connection confirmation
+        4. Server pushes whale alerts as they occur
+        5. Client can send ping/pong for keepalive
+        6. Either side can close connection
+    """
+    
+    # Extract query parameters
+    api_key = request.query.get('api_key')
+    min_amount = float(request.query.get('min_amount', 1000000))  # Default $1M
+    symbol_filter = request.query.get('symbol', '').upper() if request.query.get('symbol') else None
+    
+    # Validate API key (simple validation - in production use proper auth)
+    if not api_key:
+        return web.Response(
+            text=json.dumps({
+                "success": False,
+                "error": "API key is required. Use ?api_key=YOUR_KEY"
+            }),
+            status=401,
+            content_type='application/json'
+        )
+    
+    # For MVP, accept any non-empty API key
+    # In production, validate against database or environment variable
+    valid_api_keys = ['test_key', 'admin_key', 'whale_watcher']
+    if api_key not in valid_api_keys:
+        logger.warning("Invalid API key attempted", api_key=api_key[:8] + "...")
+        # For MVP, allow connection anyway with warning
+        # In production: return 401
+    
+    # Prepare WebSocket response
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    
+    # Add to active connections
+    whale_alert_connections.add(ws)
+    connection_id = id(ws)
+    
+    logger.info("WebSocket whale alerts connected", 
+                connection_id=connection_id,
+                min_amount=min_amount,
+                symbol_filter=symbol_filter)
+    
+    try:
+        # Send connection confirmation
+        await ws.send_json({
+            "type": "connection_established",
+            "message": "Connected to whale alerts stream",
+            "filters": {
+                "min_amount": min_amount,
+                "symbol": symbol_filter if symbol_filter else "all"
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+        
+        # Store connection metadata
+        ws.min_amount = min_amount
+        ws.symbol_filter = symbol_filter
+        ws.connection_id = connection_id
+        
+        # Handle incoming messages (ping/pong, subscription updates)
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+                    msg_type = data.get('type')
+                    
+                    if msg_type == 'ping':
+                        # Respond to ping with pong
+                        await ws.send_json({
+                            "type": "pong",
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                    
+                    elif msg_type == 'update_filters':
+                        # Allow clients to update filters without reconnecting
+                        new_min_amount = data.get('min_amount')
+                        new_symbol = data.get('symbol', '').upper()
+                        
+                        if new_min_amount:
+                            ws.min_amount = float(new_min_amount)
+                        if new_symbol:
+                            ws.symbol_filter = new_symbol if new_symbol != 'ALL' else None
+                        
+                        await ws.send_json({
+                            "type": "filters_updated",
+                            "filters": {
+                                "min_amount": ws.min_amount,
+                                "symbol": ws.symbol_filter if ws.symbol_filter else "all"
+                            },
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                        
+                        logger.info("WebSocket filters updated", 
+                                    connection_id=connection_id,
+                                    min_amount=ws.min_amount,
+                                    symbol_filter=ws.symbol_filter)
+                    
+                    else:
+                        # Unknown message type
+                        await ws.send_json({
+                            "type": "error",
+                            "error": f"Unknown message type: {msg_type}",
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                
+                except json.JSONDecodeError:
+                    await ws.send_json({
+                        "type": "error",
+                        "error": "Invalid JSON",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    })
+            
+            elif msg.type == web.WSMsgType.ERROR:
+                logger.error("WebSocket error", 
+                             connection_id=connection_id,
+                             error=ws.exception())
+    
+    finally:
+        # Remove from active connections
+        whale_alert_connections.discard(ws)
+        logger.info("WebSocket whale alerts disconnected", 
+                    connection_id=connection_id,
+                    total_connections=len(whale_alert_connections))
+    
+    return ws
+
+
+async def whale_alert_monitor(app):
+    """
+    Background task that monitors for new whale transactions
+    and broadcasts alerts to all connected WebSocket clients
+    
+    Runs every 10 seconds to check for new whale transactions
+    """
+    service = app['service']
+    
+    logger.info("Starting whale alert monitor")
+    
+    # Initialize last seen timestamp
+    last_check_time = datetime.now(timezone.utc) - timedelta(seconds=30)
+    
+    try:
+        while True:
+            await asyncio.sleep(10)  # Check every 10 seconds
+            
+            if not whale_alert_connections:
+                # No active connections, skip processing
+                continue
+            
+            try:
+                # Query for whale transactions since last check
+                current_time = datetime.now(timezone.utc)
+                hours_delta = (current_time - last_check_time).total_seconds() / 3600
+                
+                # Get whale transactions (min $1M by default in query)
+                whale_txs = await service.database.get_whale_transactions(
+                    symbol=None,
+                    hours=max(hours_delta + 0.1, 0.5),  # Add buffer and minimum 30 minutes
+                    min_amount=500000,  # Get all transactions >= $500k, clients filter
+                    limit=100
+                )
+                
+                if whale_txs:
+                    # Filter to only new transactions
+                    new_txs = []
+                    for tx in whale_txs:
+                        tx_timestamp = tx.get('timestamp')
+                        if tx_timestamp:
+                            # Convert to datetime if string
+                            if isinstance(tx_timestamp, str):
+                                tx_timestamp = datetime.fromisoformat(tx_timestamp.replace('Z', '+00:00'))
+                            
+                            if tx_timestamp > last_check_time:
+                                new_txs.append(tx)
+                    
+                    if new_txs:
+                        logger.info("Broadcasting whale alerts", 
+                                    count=len(new_txs),
+                                    connections=len(whale_alert_connections))
+                        
+                        # Broadcast to all connected clients
+                        disconnected = set()
+                        for ws in whale_alert_connections:
+                            try:
+                                # Apply client-specific filters
+                                min_amount = getattr(ws, 'min_amount', 1000000)
+                                symbol_filter = getattr(ws, 'symbol_filter', None)
+                                
+                                for tx in new_txs:
+                                    tx_amount = float(tx.get('amount_usd', 0))
+                                    tx_symbol = tx.get('symbol', '')
+                                    
+                                    # Apply filters
+                                    if tx_amount < min_amount:
+                                        continue
+                                    if symbol_filter and tx_symbol != symbol_filter:
+                                        continue
+                                    
+                                    # Send alert
+                                    await ws.send_json({
+                                        "type": "whale_alert",
+                                        "data": tx,
+                                        "timestamp": datetime.now(timezone.utc).isoformat()
+                                    })
+                            
+                            except Exception as e:
+                                logger.error("Error sending whale alert", 
+                                             error=str(e),
+                                             connection_id=getattr(ws, 'connection_id', 'unknown'))
+                                disconnected.add(ws)
+                        
+                        # Clean up disconnected clients
+                        for ws in disconnected:
+                            whale_alert_connections.discard(ws)
+                
+                # Update last check time
+                last_check_time = current_time
+            
+            except Exception as e:
+                logger.error("Error in whale alert monitor", error=str(e))
+                # Continue running even if there's an error
+    
+    except asyncio.CancelledError:
+        logger.info("Whale alert monitor cancelled")
+        raise
+
+
 async def create_health_server():
     """Create health check server"""
     app = web.Application()
@@ -3546,6 +3816,9 @@ async def create_health_server():
     app.router.add_put('/collectors/{name}/circuit-breaker/state', force_circuit_breaker_state)
     app.router.add_get('/collectors/costs', get_collector_costs)
     
+    # WebSocket Real-Time Endpoints
+    app.router.add_get('/ws/whale-alerts', websocket_whale_alerts)
+    
     return app
 
 async def main():
@@ -3578,6 +3851,10 @@ async def main():
         await service.initialize()
         await service.start_enhanced_features()
         
+        # Start WebSocket monitoring tasks
+        whale_monitor_task = asyncio.create_task(whale_alert_monitor(health_app))
+        logger.info("Started WebSocket whale alert monitor")
+        
         # Keep service running
         logger.info("Market data service is running with enhanced features...")
         while service.running:
@@ -3585,6 +3862,12 @@ async def main():
         
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt")
+        # Cancel background tasks
+        whale_monitor_task.cancel()
+        try:
+            await whale_monitor_task
+        except asyncio.CancelledError:
+            pass
     except Exception as e:
         logger.error("Service error", error=str(e))
         sys.exit(1)

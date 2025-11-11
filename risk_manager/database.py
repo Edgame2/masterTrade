@@ -1190,6 +1190,71 @@ class RiskPostgresDatabase:
             return "at_risk"
         else:
             return "behind"
+    
+    async def get_all_goals_status(self) -> List[Dict[str, Any]]:
+        """Get status of all financial goals"""
+        if not self._connected:
+            await self.initialize()
+        
+        query = """
+            SELECT 
+                goal_type,
+                target_value,
+                current_value,
+                progress_percent,
+                status,
+                updated_at
+            FROM financial_goals
+            ORDER BY goal_type
+        """
+        
+        rows = await self._postgres.fetch(query)
+        
+        goals = []
+        for row in rows:
+            goals.append({
+                "goal_type": row['goal_type'],
+                "target_value": float(row['target_value']),
+                "current_value": float(row['current_value']),
+                "progress_percent": float(row['progress_percent']),
+                "status": row['status'],
+                "updated_at": row['updated_at'].isoformat() if row['updated_at'] else None
+            })
+        
+        return goals
+    
+    async def get_goal_history(self, goal_type: str, days: int = 30) -> List[Dict[str, Any]]:
+        """Get historical progress for a specific goal"""
+        if not self._connected:
+            await self.initialize()
+        
+        query = """
+            SELECT 
+                h.snapshot_date,
+                h.actual_value,
+                h.variance_percent,
+                g.target_value,
+                g.status
+            FROM goal_progress_history h
+            JOIN financial_goals g ON h.goal_id = g.id
+            WHERE g.goal_type = $1
+                AND h.snapshot_date >= CURRENT_DATE - $2::integer
+            ORDER BY h.snapshot_date DESC
+        """
+        
+        rows = await self._postgres.fetch(query, goal_type, days)
+        
+        history = []
+        for row in rows:
+            history.append({
+                "date": row['snapshot_date'].isoformat(),
+                "actual_value": float(row['actual_value']),
+                "target_value": float(row['target_value']),
+                "variance_percent": float(row['variance_percent']),
+                "status": row['status']
+            })
+        
+        return history
 
 
 # Global database instance for compatibility with existing imports

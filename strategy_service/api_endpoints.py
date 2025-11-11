@@ -1037,6 +1037,84 @@ def create_strategy_api(strategy_service) -> FastAPI:
                 detail=f"Failed to cancel generation job: {str(e)}"
             )
     
+    @app.get("/api/v1/strategy/goal-based/adjustment")
+    async def get_goal_based_adjustment():
+        """Get current goal-based strategy adjustment factors"""
+        try:
+            # Check activation_manager first (where goal_selector is integrated)
+            activation_manager = None
+            if hasattr(strategy_service, 'activation_manager') and hasattr(strategy_service.activation_manager, 'goal_selector'):
+                activation_manager = strategy_service.activation_manager
+            elif hasattr(strategy_service, 'enhanced_activation_system') and hasattr(strategy_service.enhanced_activation_system, 'goal_selector'):
+                activation_manager = strategy_service.enhanced_activation_system
+            
+            if not activation_manager or not hasattr(activation_manager, 'goal_selector'):
+                raise HTTPException(
+                    status_code=503,
+                    detail="Goal-based selector not initialized"
+                )
+            
+            summary = activation_manager.goal_selector.get_current_adjustment_summary()
+            
+            return {
+                "success": True,
+                "adjustment": summary,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting goal-based adjustment: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=str(e)
+            )
+    
+    @app.post("/api/v1/strategy/goal-based/refresh")
+    async def refresh_goal_progress():
+        """Manually refresh goal progress from risk manager"""
+        try:
+            # Check activation_manager first (where goal_selector is integrated)
+            activation_manager = None
+            if hasattr(strategy_service, 'activation_manager') and hasattr(strategy_service.activation_manager, 'goal_selector'):
+                activation_manager = strategy_service.activation_manager
+            elif hasattr(strategy_service, 'enhanced_activation_system') and hasattr(strategy_service.enhanced_activation_system, 'goal_selector'):
+                activation_manager = strategy_service.enhanced_activation_system
+            
+            if not activation_manager or not hasattr(activation_manager, 'goal_selector'):
+                raise HTTPException(
+                    status_code=503,
+                    detail="Goal-based selector not initialized"
+                )
+            
+            # Force refresh from risk manager
+            goal_progress = await activation_manager.goal_selector.get_goal_progress()
+            
+            return {
+                "success": True,
+                "goals": {
+                    goal_type: {
+                        "progress": f"{goal.progress_percent:.1f}%",
+                        "status": goal.status,
+                        "current_value": float(goal.current_value),
+                        "target_value": float(goal.target_value)
+                    }
+                    for goal_type, goal in goal_progress.items()
+                },
+                "message": "Goal progress refreshed successfully",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error refreshing goal progress: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=str(e)
+            )
+    
     # Include enhanced strategy activation router
     if hasattr(strategy_service, 'enhanced_activation_system') and strategy_service.enhanced_activation_system:
         set_activation_system(strategy_service.enhanced_activation_system)
