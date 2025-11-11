@@ -39,12 +39,24 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
-# Metrics
-api_requests = Counter('data_access_requests_total', 'Total API requests', ['endpoint', 'method'])
-response_time = Histogram('data_access_response_time_seconds', 'Response time', ['endpoint'])
-cache_hits = Counter('data_access_cache_hits_total', 'Cache hits', ['type'])
+# Metrics - Check if already registered to avoid duplicate registration
+from prometheus_client import REGISTRY
 
-# FastAPI app
+def get_or_create_counter(name, description, labels):
+    if name in REGISTRY._names_to_collectors:
+        return REGISTRY._names_to_collectors[name]
+    return Counter(name, description, labels)
+
+def get_or_create_histogram(name, description, labels):
+    if name in REGISTRY._names_to_collectors:
+        return REGISTRY._names_to_collectors[name]
+    return Histogram(name, description, labels)
+
+api_requests = get_or_create_counter('data_access_requests_total', 'Total API requests', ['endpoint', 'method'])
+response_time = get_or_create_histogram('data_access_response_time_seconds', 'Response time', ['endpoint'])
+cache_hits = get_or_create_counter('data_access_cache_hits_total', 'Cache hits', ['type'])
+
+# Application Setup# FastAPI app
 app = FastAPI(
     title="MasterTrade Data Access API",
     description="Unified data access for market data stored in Azure Cosmos DB",

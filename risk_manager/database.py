@@ -51,6 +51,12 @@ def _to_serializable(value: Any) -> Any:
         return float(value)
     if isinstance(value, uuid.UUID):
         return str(value)
+    if hasattr(value, 'value'):  # Handle Enum objects
+        return value.value
+    if isinstance(value, dict):
+        return {k: _to_serializable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_serializable(item) for item in value]
     return value
 
 

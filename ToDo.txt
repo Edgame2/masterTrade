@@ -1,2 +1,0 @@
-✅ COMPLETED - strategy service must read the Number of maximum active strategies defined in table Settings: MAX_ACTIVE_STRATEGIES, if undefinied default is 2.
-✅ COMPLETED - Strategy service must automaticaly activate the best strategies.

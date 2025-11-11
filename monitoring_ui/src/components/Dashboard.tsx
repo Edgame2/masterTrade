@@ -8,11 +8,12 @@ import PortfolioOverview from './PortfolioOverview';
 import PerformanceChart from './PerformanceChart';
 import LivePositions from './LivePositions';
 import CryptoManager from './CryptoManager';
+import StrategyGenerator from './StrategyGenerator';
 import { useWebSocket } from '@/hooks/useWebSocket';
 
 export default function Dashboard() {
   const { data: session } = useSession();
-  const [activeTab, setActiveTab] = useState<'overview' | 'strategies' | 'positions' | 'performance' | 'crypto'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'strategies' | 'generator' | 'positions' | 'performance' | 'crypto'>('overview');
   const [stats, setStats] = useState({
     totalPnL: 0,
     totalValue: 0,
@@ -156,7 +157,7 @@ export default function Dashboard() {
         <div className="bg-white dark:bg-slate-800 rounded-lg shadow-md mb-6">
           <div className="border-b border-gray-200 dark:border-gray-700">
             <nav className="flex space-x-8 px-6">
-              {['overview', 'strategies', 'positions', 'performance', 'crypto'].map((tab) => (
+              {['overview', 'strategies', 'generator', 'positions', 'performance', 'crypto'].map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab as any)}
@@ -185,6 +186,7 @@ export default function Dashboard() {
             </div>
           )}
           {activeTab === 'strategies' && <StrategyList />}
+          {activeTab === 'generator' && <StrategyGenerator />}
           {activeTab === 'positions' && <LivePositions />}
           {activeTab === 'performance' && <PerformanceChart detailed />}
           {activeTab === 'crypto' && <CryptoManager />}

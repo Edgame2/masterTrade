@@ -777,11 +777,11 @@ async def health_check(request):
 
 async def metrics_endpoint(request):
     """Metrics endpoint for Prometheus"""
-    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
     
     return web.Response(
         body=generate_latest(),
-        content_type=CONTENT_TYPE_LATEST
+        headers={'Content-Type': CONTENT_TYPE_LATEST}
     )
 
 async def create_web_server():

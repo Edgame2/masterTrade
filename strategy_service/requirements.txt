@@ -74,4 +74,4 @@ quandl>=3.7.0
 
 # Parallel Processing and Distributed Computing
 ray>=2.8.0
-multiprocessing-logging>=0.3.4
+multiprocessing-logging>=0.3.4redis[asyncio]==5.0.1

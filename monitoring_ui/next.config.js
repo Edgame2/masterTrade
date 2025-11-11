@@ -30,11 +30,6 @@ const nextConfig = {
     ]
   },
   
-  // Enable experimental features for PWA
-  experimental: {
-    optimizeCss: true,
-  },
-  
   // Enable standalone output for Docker
   output: 'standalone',
   

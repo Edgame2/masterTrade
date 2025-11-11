@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 import structlog
 
@@ -91,7 +91,7 @@ class Database:
             """,
             """
             CREATE INDEX IF NOT EXISTS idx_market_data_symbol_ts
-                ON market_data ((data->>'symbol'), ((data->>'timestamp')::timestamptz))
+                ON market_data ((data->>'symbol'), (data->>'timestamp'))
             """,
             """
             CREATE INDEX IF NOT EXISTS idx_market_data_interval
@@ -112,7 +112,7 @@ class Database:
             """,
             """
             CREATE INDEX IF NOT EXISTS idx_trades_stream_symbol_ts
-                ON trades_stream ((data->>'symbol'), ((data->>'timestamp')::timestamptz))
+                ON trades_stream ((data->>'symbol'), (data->>'timestamp'))
             """,
             """
             CREATE TABLE IF NOT EXISTS order_book (
@@ -125,7 +125,7 @@ class Database:
             """,
             """
             CREATE INDEX IF NOT EXISTS idx_order_book_symbol_ts
-                ON order_book ((data->>'symbol'), ((data->>'timestamp')::timestamptz))
+                ON order_book ((data->>'symbol'), (data->>'timestamp'))
             """,
             """
             CREATE TABLE IF NOT EXISTS sentiment_data (
@@ -139,11 +139,11 @@ class Database:
             """,
             """
             CREATE INDEX IF NOT EXISTS idx_sentiment_source_ts
-                ON sentiment_data ((data->>'source'), ((data->>'timestamp')::timestamptz))
+                ON sentiment_data ((data->>'source'), (data->>'timestamp'))
             """,
             """
             CREATE INDEX IF NOT EXISTS idx_sentiment_type_ts
-                ON sentiment_data ((data->>'type'), ((data->>'timestamp')::timestamptz))
+                ON sentiment_data ((data->>'type'), (data->>'timestamp'))
             """,
             """
             CREATE INDEX IF NOT EXISTS idx_sentiment_symbol
@@ -202,11 +202,140 @@ class Database:
             """,
             """
             CREATE INDEX IF NOT EXISTS idx_indicator_results_config_ts
-                ON indicator_results ((data->>'configuration_id'), ((data->>'timestamp')::timestamptz))
+                ON indicator_results ((data->>'configuration_id'), (data->>'timestamp'))
             """,
             """
             CREATE INDEX IF NOT EXISTS idx_indicator_results_symbol_ts
-                ON indicator_results ((data->>'symbol'), ((data->>'timestamp')::timestamptz))
+                ON indicator_results ((data->>'symbol'), (data->>'timestamp'))
+            """,
+            # On-chain data tables
+            """
+            CREATE TABLE IF NOT EXISTS whale_transactions (
+                id TEXT PRIMARY KEY,
+                partition_key TEXT NOT NULL,
+                data JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ttl_seconds INTEGER
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_whale_tx_symbol_ts
+                ON whale_transactions ((data->>'symbol'), (data->>'timestamp'))
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_whale_tx_hash
+                ON whale_transactions ((data->>'tx_hash'))
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_whale_tx_from
+                ON whale_transactions ((data->>'from_address'))
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_whale_tx_to
+                ON whale_transactions ((data->>'to_address'))
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS onchain_metrics (
+                id TEXT PRIMARY KEY,
+                partition_key TEXT NOT NULL,
+                data JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ttl_seconds INTEGER
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_onchain_metrics_symbol_ts
+                ON onchain_metrics ((data->>'symbol'), (data->>'timestamp'))
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_onchain_metrics_name
+                ON onchain_metrics ((data->>'metric_name'))
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_onchain_metrics_category
+                ON onchain_metrics ((data->>'metric_category'))
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS wallet_labels (
+                id TEXT PRIMARY KEY,
+                partition_key TEXT NOT NULL,
+                data JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_wallet_labels_address
+                ON wallet_labels ((data->>'address'))
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_wallet_labels_category
+                ON wallet_labels ((data->>'category'))
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS collector_health (
+                id TEXT PRIMARY KEY,
+                partition_key TEXT NOT NULL,
+                data JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_collector_health_name_ts
+                ON collector_health ((data->>'collector_name'), created_at DESC)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_collector_health_status
+                ON collector_health ((data->>'status'))
+            """,
+            # Social sentiment tables
+            """
+            CREATE TABLE IF NOT EXISTS social_sentiment (
+                id TEXT PRIMARY KEY,
+                partition_key TEXT NOT NULL,
+                data JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ttl_seconds INTEGER
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_social_sentiment_symbol_ts
+                ON social_sentiment ((data->>'symbol'), (data->>'timestamp'))
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_social_sentiment_source
+                ON social_sentiment ((data->>'source'))
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_social_sentiment_category
+                ON social_sentiment ((data->>'sentiment_category'))
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_social_sentiment_influencer
+                ON social_sentiment ((data->>'is_influencer'))
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS social_metrics_aggregated (
+                id TEXT PRIMARY KEY,
+                partition_key TEXT NOT NULL,
+                data JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ttl_seconds INTEGER
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_social_metrics_agg_symbol_ts
+                ON social_metrics_aggregated ((data->>'symbol'), (data->>'timestamp'))
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_social_metrics_agg_source
+                ON social_metrics_aggregated ((data->>'source'))
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_social_metrics_agg_altrank
+                ON social_metrics_aggregated ((data->>'altrank'))
             """,
         ]
 
@@ -254,11 +383,24 @@ class Database:
 
     async def _fetch_data(self, query: str, *params: Any) -> List[Dict[str, Any]]:
         rows = await self._postgres.fetch(query, *params)
-        return [row["data"] for row in rows]
+        result = []
+        for row in rows:
+            data = row["data"]
+            # Parse JSON string if necessary
+            if isinstance(data, str):
+                data = json.loads(data)
+            result.append(data)
+        return result
 
     async def _fetch_one_data(self, query: str, *params: Any) -> Optional[Dict[str, Any]]:
         row = await self._postgres.fetchrow(query, *params)
-        return row["data"] if row else None
+        if not row:
+            return None
+        data = row["data"]
+        # Parse JSON string if necessary
+        if isinstance(data, str):
+            data = json.loads(data)
+        return data
 
     async def _upsert_document(
         self,
@@ -314,9 +456,37 @@ class Database:
     async def upsert_market_data(self, data: MarketData) -> None:
         await self.insert_market_data(data)
 
-    async def upsert_market_data_batch(self, data_list: Iterable[MarketData]) -> None:
+    async def upsert_market_data_batch(self, data_list: Iterable[Union[MarketData, Dict[str, Any]]]) -> None:
+        """Insert batch of market data - accepts both MarketData objects and dicts"""
         for record in data_list:
-            await self.insert_market_data(record)
+            if isinstance(record, dict):
+                # Convert dict to MarketData object
+                try:
+                    # Handle timestamp conversion
+                    timestamp = record.get('timestamp')
+                    if isinstance(timestamp, str):
+                        timestamp = datetime.fromisoformat(timestamp.rstrip('Z'))
+                    elif not isinstance(timestamp, datetime):
+                        raise ValueError(f"Invalid timestamp type: {type(timestamp)}")
+                    
+                    market_data = MarketData(
+                        symbol=record['symbol'],
+                        timestamp=timestamp,
+                        open_price=float(record.get('open_price', 0)),
+                        high_price=float(record.get('high_price', 0)),
+                        low_price=float(record.get('low_price', 0)),
+                        close_price=float(record.get('close_price', 0)),
+                        volume=float(record.get('volume', 0)),
+                        quote_volume=float(record.get('quote_asset_volume', record.get('quote_volume', 0))),
+                        trades_count=int(record.get('number_of_trades', record.get('trades_count', 0))),
+                        interval=record.get('interval', '1m')
+                    )
+                    await self.insert_market_data(market_data)
+                except Exception as e:
+                    logger.error(f"Error converting dict to MarketData: {e}", record=record)
+                    continue
+            else:
+                await self.insert_market_data(record)
 
     async def insert_trade_data(self, data: TradeData) -> None:
         document = {
@@ -1133,4 +1303,689 @@ class Database:
         deleted = len(rows)
         logger.info("Cleaned up old indicator results", deleted_count=deleted, cutoff_days=days_old)
         return deleted
+
+    # ------------------------------------------------------------------
+    # On-chain data methods
+    # ------------------------------------------------------------------
+
+    async def store_whale_transaction(self, tx_data: Dict[str, Any]) -> bool:
+        """
+        Store whale transaction data
+        
+        Args:
+            tx_data: Transaction data dict containing tx_hash, symbol, amount, etc.
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            tx_id = tx_data.get("tx_hash", "")
+            if not tx_id:
+                logger.error("Cannot store whale transaction without tx_hash")
+                return False
+                
+            symbol = tx_data.get("symbol", "UNKNOWN")
+            document = serialize_datetime_fields(tx_data)
+            payload = json.dumps(document)
+            
+            await self._postgres.execute(
+                """
+                INSERT INTO whale_transactions (id, partition_key, data, created_at)
+                VALUES ($1, $2, $3::jsonb, NOW())
+                ON CONFLICT (id)
+                DO UPDATE SET data = EXCLUDED.data
+                """,
+                tx_id,
+                symbol,
+                payload,
+            )
+            
+            logger.debug(
+                "Stored whale transaction",
+                tx_hash=tx_id,
+                symbol=symbol,
+                amount=tx_data.get("amount")
+            )
+            return True
+            
+        except Exception as e:
+            logger.error("Error storing whale transaction", error=str(e))
+            return False
+
+    async def store_onchain_metrics(self, metrics: List[Dict[str, Any]]) -> bool:
+        """
+        Store on-chain metrics data
+        
+        Args:
+            metrics: List of metric dicts containing metric_name, symbol, value, etc.
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not metrics:
+                return True
+                
+            for metric_data in metrics:
+                metric_id = f"{metric_data['symbol']}_{metric_data['metric_name']}_{int(metric_data['timestamp'].timestamp())}"
+                partition_key = metric_data['symbol']
+                
+                document = serialize_datetime_fields(metric_data)
+                payload = json.dumps(document)
+                
+                await self._postgres.execute(
+                    """
+                    INSERT INTO onchain_metrics (id, partition_key, data, created_at, updated_at)
+                    VALUES ($1, $2, $3::jsonb, NOW(), NOW())
+                    ON CONFLICT (id)
+                    DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
+                    """,
+                    metric_id,
+                    partition_key,
+                    payload,
+                )
+                
+            logger.debug(
+                "Stored on-chain metrics",
+                count=len(metrics)
+            )
+            return True
+            
+        except Exception as e:
+            logger.error("Error storing on-chain metrics", error=str(e))
+            return False
+
+    async def store_wallet_label(self, address: str, label: str, category: str, metadata: Dict = None) -> bool:
+        """
+        Store wallet label/categorization
+        
+        Args:
+            address: Wallet address
+            label: Wallet label/name
+            category: Category (e.g., 'exchange', 'whale', 'smart_money')
+            metadata: Optional additional metadata
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            wallet_data = {
+                "address": address.lower(),
+                "label": label,
+                "category": category,
+                "metadata": metadata or {},
+                "updated_at": _utc_now_iso()
+            }
+            
+            payload = json.dumps(wallet_data)
+            
+            await self._postgres.execute(
+                """
+                INSERT INTO wallet_labels (id, partition_key, data, created_at, updated_at)
+                VALUES ($1, $2, $3::jsonb, NOW(), NOW())
+                ON CONFLICT (id)
+                DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
+                """,
+                address.lower(),
+                category,
+                payload,
+            )
+            
+            logger.debug(
+                "Stored wallet label",
+                address=address,
+                label=label,
+                category=category
+            )
+            return True
+            
+        except Exception as e:
+            logger.error("Error storing wallet label", error=str(e))
+            return False
+
+    async def get_whale_transactions(
+        self,
+        symbol: str = None,
+        hours: int = 24,
+        min_amount: float = None,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Get recent whale transactions
+        
+        Args:
+            symbol: Filter by symbol (optional)
+            hours: Hours of history to retrieve
+            min_amount: Minimum transaction amount filter
+            limit: Maximum number of results
+            
+        Returns:
+            List of whale transaction dicts
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            
+            if symbol:
+                if min_amount:
+                    query = """
+                        SELECT data
+                        FROM whale_transactions
+                        WHERE data->>'symbol' = $1
+                          AND (data->>'timestamp')::timestamptz >= $2
+                          AND (data->>'amount')::float >= $3
+                        ORDER BY (data->>'timestamp')::timestamptz DESC
+                        LIMIT $4
+                    """
+                    return await self._fetch_data(query, symbol, cutoff, min_amount, limit)
+                else:
+                    query = """
+                        SELECT data
+                        FROM whale_transactions
+                        WHERE data->>'symbol' = $1
+                          AND (data->>'timestamp')::timestamptz >= $2
+                        ORDER BY (data->>'timestamp')::timestamptz DESC
+                        LIMIT $3
+                    """
+                    return await self._fetch_data(query, symbol, cutoff, limit)
+            else:
+                if min_amount:
+                    query = """
+                        SELECT data
+                        FROM whale_transactions
+                        WHERE (data->>'timestamp')::timestamptz >= $1
+                          AND (data->>'amount')::float >= $2
+                        ORDER BY (data->>'timestamp')::timestamptz DESC
+                        LIMIT $3
+                    """
+                    return await self._fetch_data(query, cutoff, min_amount, limit)
+                else:
+                    query = """
+                        SELECT data
+                        FROM whale_transactions
+                        WHERE (data->>'timestamp')::timestamptz >= $1
+                        ORDER BY (data->>'timestamp')::timestamptz DESC
+                        LIMIT $2
+                    """
+                    return await self._fetch_data(query, cutoff, limit)
+                    
+        except Exception as e:
+            logger.error("Error getting whale transactions", error=str(e))
+            return []
+
+    async def get_onchain_metrics(
+        self,
+        symbol: str,
+        metric_name: str = None,
+        hours: int = 24,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Get on-chain metrics
+        
+        Args:
+            symbol: Symbol to get metrics for
+            metric_name: Specific metric name (optional)
+            hours: Hours of history to retrieve
+            limit: Maximum number of results
+            
+        Returns:
+            List of metric dicts
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            
+            if metric_name:
+                query = """
+                    SELECT data
+                    FROM onchain_metrics
+                    WHERE data->>'symbol' = $1
+                      AND data->>'metric_name' = $2
+                      AND (data->>'timestamp')::timestamptz >= $3
+                    ORDER BY (data->>'timestamp')::timestamptz DESC
+                    LIMIT $4
+                """
+                return await self._fetch_data(query, symbol, metric_name, cutoff, limit)
+            else:
+                query = """
+                    SELECT data
+                    FROM onchain_metrics
+                    WHERE data->>'symbol' = $1
+                      AND (data->>'timestamp')::timestamptz >= $2
+                    ORDER BY (data->>'timestamp')::timestamptz DESC
+                    LIMIT $3
+                """
+                return await self._fetch_data(query, symbol, cutoff, limit)
+                
+        except Exception as e:
+            logger.error("Error getting on-chain metrics", error=str(e))
+            return []
+
+    async def get_wallet_label(self, address: str) -> Optional[Dict[str, Any]]:
+        """
+        Get wallet label information
+        
+        Args:
+            address: Wallet address
+            
+        Returns:
+            Wallet label dict or None
+        """
+        return await self._fetch_one_data(
+            "SELECT data FROM wallet_labels WHERE id = $1",
+            address.lower()
+        )
+
+    async def get_wallet_labels_by_category(self, category: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get wallet labels by category
+        
+        Args:
+            category: Category to filter by
+            limit: Maximum number of results
+            
+        Returns:
+            List of wallet label dicts
+        """
+        query = """
+            SELECT data
+            FROM wallet_labels
+            WHERE data->>'category' = $1
+            LIMIT $2
+        """
+        return await self._fetch_data(query, category, limit)
+
+    async def log_collector_health(
+        self,
+        collector_name: str,
+        status: str,
+        error_msg: str = None,
+        metadata: Dict = None
+    ) -> bool:
+        """
+        Log collector health status
+        
+        Args:
+            collector_name: Name of the collector
+            status: Status (healthy, degraded, failed, circuit_open)
+            error_msg: Optional error message
+            metadata: Optional additional metadata
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            health_id = f"{collector_name}_{int(datetime.now(timezone.utc).timestamp())}"
+            
+            health_data = {
+                "collector_name": collector_name,
+                "status": status,
+                "error_msg": error_msg,
+                "metadata": metadata or {},
+                "timestamp": _utc_now_iso()
+            }
+            
+            payload = json.dumps(health_data)
+            
+            await self._postgres.execute(
+                """
+                INSERT INTO collector_health (id, partition_key, data, created_at)
+                VALUES ($1, $2, $3::jsonb, NOW())
+                """,
+                health_id,
+                collector_name,
+                payload,
+            )
+            
+            return True
+            
+        except Exception as e:
+            logger.error("Error logging collector health", error=str(e))
+            return False
+
+    async def get_collector_health(
+        self,
+        collector_name: str = None,
+        hours: int = 24,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Get collector health history
+        
+        Args:
+            collector_name: Specific collector name (optional, returns all if None)
+            hours: Hours of history to retrieve
+            limit: Maximum number of results
+            
+        Returns:
+            List of health status dicts
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            
+            if collector_name:
+                query = """
+                    SELECT data
+                    FROM collector_health
+                    WHERE data->>'collector_name' = $1
+                      AND created_at >= $2
+                    ORDER BY created_at DESC
+                    LIMIT $3
+                """
+                return await self._fetch_data(query, collector_name, cutoff, limit)
+            else:
+                query = """
+                    SELECT data
+                    FROM collector_health
+                    WHERE created_at >= $1
+                    ORDER BY created_at DESC
+                    LIMIT $2
+                """
+                return await self._fetch_data(query, cutoff, limit)
+                
+        except Exception as e:
+            logger.error("Error getting collector health", error=str(e))
+            return []
+
+    # ========== Social Sentiment Data Methods ==========
+
+    async def store_social_sentiment(self, sentiment_data: Dict[str, Any]) -> bool:
+        """
+        Store social sentiment data (Twitter, Reddit, etc.)
+        
+        Args:
+            sentiment_data: Sentiment data dict with keys:
+                - symbol: Cryptocurrency symbol
+                - source: Source platform (twitter, reddit, etc.)
+                - text: Original text
+                - sentiment_score: Compound sentiment score (-1 to 1)
+                - sentiment_category: Category (very_negative, negative, neutral, positive, very_positive)
+                - sentiment_positive: Positive score (0 to 1)
+                - sentiment_negative: Negative score (0 to 1)
+                - sentiment_neutral: Neutral score (0 to 1)
+                - timestamp: When the post was created
+                - author_id: Author identifier
+                - author_username: Author username
+                - is_influencer: Boolean indicating if author is an influencer
+                - engagement_score: Engagement metric (likes + retweets + comments)
+                - like_count: Number of likes
+                - retweet_count: Number of retweets/shares
+                - reply_count: Number of replies/comments
+                - post_id: Unique post identifier
+                - metadata: Additional platform-specific data
+                
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            sentiment_id = f"{sentiment_data['source']}_{sentiment_data['post_id']}"
+            partition_key = f"{sentiment_data['symbol']}_{sentiment_data['source']}"
+            
+            # Ensure timestamp is ISO format
+            timestamp = sentiment_data.get('timestamp')
+            if isinstance(timestamp, datetime):
+                sentiment_data['timestamp'] = timestamp.isoformat()
+            
+            payload = json.dumps(sentiment_data, default=str)
+            
+            # Set TTL to 90 days for social sentiment data
+            ttl_seconds = 90 * 24 * 3600
+            
+            await self._postgres.execute(
+                """
+                INSERT INTO social_sentiment (id, partition_key, data, created_at, ttl_seconds)
+                VALUES ($1, $2, $3::jsonb, NOW(), $4)
+                ON CONFLICT (id)
+                DO UPDATE SET data = EXCLUDED.data
+                """,
+                sentiment_id,
+                partition_key,
+                payload,
+                ttl_seconds,
+            )
+            
+            logger.debug(
+                "Stored social sentiment",
+                symbol=sentiment_data['symbol'],
+                source=sentiment_data['source'],
+                sentiment=sentiment_data['sentiment_category']
+            )
+            return True
+            
+        except Exception as e:
+            logger.error("Error storing social sentiment", error=str(e), data=sentiment_data)
+            return False
+
+    async def store_social_metrics_aggregated(self, metrics_data: Dict[str, Any]) -> bool:
+        """
+        Store aggregated social metrics (e.g., from LunarCrush)
+        
+        Args:
+            metrics_data: Metrics data dict with keys:
+                - symbol: Cryptocurrency symbol
+                - timestamp: Metric timestamp
+                - altrank: AltRank score
+                - altrank_30d: 30-day AltRank
+                - galaxy_score: Galaxy Score
+                - volatility: Volatility metric
+                - social_volume: Social volume count
+                - social_volume_24h: 24h social volume
+                - social_dominance: Social dominance percentage
+                - social_contributors: Number of unique contributors
+                - sentiment_score: Aggregated sentiment (1-5 scale)
+                - average_sentiment: Average sentiment score
+                - tweets_24h: Tweets in last 24h
+                - reddit_posts_24h: Reddit posts in last 24h
+                - reddit_comments_24h: Reddit comments in last 24h
+                - price: Current price
+                - price_btc: Price in BTC
+                - volume_24h: Trading volume
+                - market_cap: Market capitalization
+                - percent_change_24h: 24h price change percentage
+                - correlation_rank: Correlation rank
+                - source: Data source (lunarcrush, etc.)
+                - metadata: Additional metadata
+                
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            metrics_id = f"{metrics_data['symbol']}_{metrics_data['source']}_{_utc_now_iso()}"
+            partition_key = f"{metrics_data['symbol']}_{metrics_data['source']}"
+            
+            # Ensure timestamp is ISO format
+            timestamp = metrics_data.get('timestamp')
+            if isinstance(timestamp, datetime):
+                metrics_data['timestamp'] = timestamp.isoformat()
+            
+            payload = json.dumps(metrics_data, default=str)
+            
+            # Set TTL to 90 days
+            ttl_seconds = 90 * 24 * 3600
+            
+            await self._postgres.execute(
+                """
+                INSERT INTO social_metrics_aggregated (id, partition_key, data, created_at, updated_at, ttl_seconds)
+                VALUES ($1, $2, $3::jsonb, NOW(), NOW(), $4)
+                ON CONFLICT (id)
+                DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
+                """,
+                metrics_id,
+                partition_key,
+                payload,
+                ttl_seconds,
+            )
+            
+            logger.debug(
+                "Stored aggregated social metrics",
+                symbol=metrics_data['symbol'],
+                source=metrics_data['source'],
+                altrank=metrics_data.get('altrank'),
+                galaxy_score=metrics_data.get('galaxy_score')
+            )
+            return True
+            
+        except Exception as e:
+            logger.error("Error storing aggregated social metrics", error=str(e))
+            return False
+
+    async def get_social_sentiment(
+        self,
+        symbol: str = None,
+        source: str = None,
+        hours: int = 24,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Get social sentiment data
+        
+        Args:
+            symbol: Filter by cryptocurrency symbol (optional)
+            source: Filter by source platform (twitter, reddit, etc.) (optional)
+            hours: Hours of history to retrieve
+            limit: Maximum number of results
+            
+        Returns:
+            List of sentiment dicts
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            
+            if symbol and source:
+                query = """
+                    SELECT data
+                    FROM social_sentiment
+                    WHERE data->>'symbol' = $1
+                      AND data->>'source' = $2
+                      AND (data->>'timestamp')::timestamptz >= $3
+                    ORDER BY (data->>'timestamp')::timestamptz DESC
+                    LIMIT $4
+                """
+                return await self._fetch_data(query, symbol, source, cutoff, limit)
+            elif symbol:
+                query = """
+                    SELECT data
+                    FROM social_sentiment
+                    WHERE data->>'symbol' = $1
+                      AND (data->>'timestamp')::timestamptz >= $2
+                    ORDER BY (data->>'timestamp')::timestamptz DESC
+                    LIMIT $3
+                """
+                return await self._fetch_data(query, symbol, cutoff, limit)
+            elif source:
+                query = """
+                    SELECT data
+                    FROM social_sentiment
+                    WHERE data->>'source' = $1
+                      AND (data->>'timestamp')::timestamptz >= $2
+                    ORDER BY (data->>'timestamp')::timestamptz DESC
+                    LIMIT $3
+                """
+                return await self._fetch_data(query, source, cutoff, limit)
+            else:
+                query = """
+                    SELECT data
+                    FROM social_sentiment
+                    WHERE (data->>'timestamp')::timestamptz >= $1
+                    ORDER BY (data->>'timestamp')::timestamptz DESC
+                    LIMIT $2
+                """
+                return await self._fetch_data(query, cutoff, limit)
+                
+        except Exception as e:
+            logger.error("Error getting social sentiment", error=str(e))
+            return []
+
+    async def get_social_metrics_aggregated(
+        self,
+        symbol: str = None,
+        hours: int = 24,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Get aggregated social metrics
+        
+        Args:
+            symbol: Filter by cryptocurrency symbol (optional)
+            hours: Hours of history to retrieve
+            limit: Maximum number of results
+            
+        Returns:
+            List of aggregated metrics dicts
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            
+            if symbol:
+                query = """
+                    SELECT data
+                    FROM social_metrics_aggregated
+                    WHERE data->>'symbol' = $1
+                      AND (data->>'timestamp')::timestamptz >= $2
+                    ORDER BY (data->>'timestamp')::timestamptz DESC
+                    LIMIT $3
+                """
+                return await self._fetch_data(query, symbol, cutoff, limit)
+            else:
+                query = """
+                    SELECT data
+                    FROM social_metrics_aggregated
+                    WHERE (data->>'timestamp')::timestamptz >= $1
+                    ORDER BY (data->>'timestamp')::timestamptz DESC
+                    LIMIT $2
+                """
+                return await self._fetch_data(query, cutoff, limit)
+                
+        except Exception as e:
+            logger.error("Error getting aggregated social metrics", error=str(e))
+            return []
+
+    async def get_trending_topics(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get trending cryptocurrency topics based on social volume
+        
+        Args:
+            limit: Number of trending topics to return
+            
+        Returns:
+            List of trending topics with metrics
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            
+            query = """
+                SELECT 
+                    data->>'symbol' as symbol,
+                    COUNT(*) as mention_count,
+                    AVG((data->>'sentiment_score')::float) as avg_sentiment,
+                    SUM((data->>'engagement_score')::int) as total_engagement,
+                    COUNT(DISTINCT data->>'author_id') as unique_authors
+                FROM social_sentiment
+                WHERE (data->>'timestamp')::timestamptz >= $1
+                GROUP BY data->>'symbol'
+                ORDER BY mention_count DESC, total_engagement DESC
+                LIMIT $2
+            """
+            
+            rows = await self._postgres.fetch(query, cutoff, limit)
+            
+            trending = []
+            for row in rows:
+                trending.append({
+                    "symbol": row["symbol"],
+                    "mention_count": row["mention_count"],
+                    "avg_sentiment": float(row["avg_sentiment"]) if row["avg_sentiment"] else 0.0,
+                    "total_engagement": row["total_engagement"],
+                    "unique_authors": row["unique_authors"],
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+                
+            logger.debug("Retrieved trending topics", count=len(trending))
+            return trending
+            
+        except Exception as e:
+            logger.error("Error getting trending topics", error=str(e))
+            return []
+
+
+
 

@@ -6,20 +6,19 @@ including position sizing, stop-loss management, portfolio risk monitoring, and 
 """
 
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from typing import Dict, List, Optional, Union
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 import asyncio
 import structlog
-import sys
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, Counter, Histogram, Gauge
 
-sys.path.append('../shared')
-from price_prediction_client import PricePredictionClient
+from shared.price_prediction_client import PricePredictionClient
 
 from config import settings
-from database import RiskManagementDatabase
+from database import RiskPostgresDatabase
 from position_sizing import PositionSizingEngine, PositionSizeRequest, PositionSizeResult
 from stop_loss_manager import StopLossManager, StopLossConfig, StopLossType, StopLossOrder
 from portfolio_risk_controller import PortfolioRiskController, RiskMetrics, RiskAlert, RiskLevel
@@ -87,7 +86,7 @@ class RiskLimitsModel(BaseModel):
     max_leverage: Optional[float] = Field(None, ge=1, le=10, description="Maximum leverage ratio")
 
 # Initialize components
-database = RiskManagementDatabase()
+database = RiskPostgresDatabase()
 price_prediction_client = PricePredictionClient(
     base_url=settings.STRATEGY_SERVICE_URL,
     service_name=settings.SERVICE_NAME,
@@ -122,7 +121,7 @@ async def startup_event():
     try:
         logger.info("Starting Risk Management API")
         await database.initialize()
-    await price_prediction_client.initialize()
+        await price_prediction_client.initialize()
         logger.info("Risk Management API started successfully")
     except Exception as e:
         logger.error(f"Failed to start Risk Management API: {e}")
@@ -134,10 +133,19 @@ async def shutdown_event():
     try:
         logger.info("Shutting down Risk Management API")
         await database.close()
-    await price_prediction_client.close()
+        await price_prediction_client.close()
         logger.info("Risk Management API shutdown completed")
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
+
+# Metrics endpoint for Prometheus
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint"""
+    return PlainTextResponse(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
 
 # Health check endpoint
 @app.get("/health")
@@ -173,7 +181,7 @@ async def health_check():
 @app.post("/position-sizing/calculate", response_model=PositionSizeResponse)
 async def calculate_position_size(
     request: PositionSizeRequestModel,
-    db: RiskManagementDatabase = Depends(get_database)
+    db: RiskPostgresDatabase = Depends(get_database)
 ):
     """
     Calculate optimal position size for a trading signal
@@ -247,7 +255,7 @@ async def get_position_sizing_limits():
 @app.post("/stop-loss/create")
 async def create_stop_loss(
     request: StopLossCreateRequest,
-    db: RiskManagementDatabase = Depends(get_database)
+    db: RiskPostgresDatabase = Depends(get_database)
 ):
     """
     Create a new stop-loss order for a position
@@ -298,7 +306,7 @@ async def create_stop_loss(
 async def update_stop_loss_prices(
     price_updates: PriceUpdateModel,
     background_tasks: BackgroundTasks,
-    db: RiskManagementDatabase = Depends(get_database)
+    db: RiskPostgresDatabase = Depends(get_database)
 ):
     """
     Update all stop-loss orders with new price data
@@ -356,7 +364,7 @@ async def update_stop_loss_prices(
 @app.get("/stop-loss/status/{position_id}")
 async def get_stop_loss_status(
     position_id: str,
-    db: RiskManagementDatabase = Depends(get_database)
+    db: RiskPostgresDatabase = Depends(get_database)
 ):
     """Get current stop-loss status for a position"""
     try:
@@ -398,7 +406,7 @@ async def modify_stop_loss(
     order_id: str,
     new_stop_price: Optional[float] = None,
     new_config: Optional[StopLossConfigModel] = None,
-    db: RiskManagementDatabase = Depends(get_database)
+    db: RiskPostgresDatabase = Depends(get_database)
 ):
     """Modify an existing stop-loss order"""
     try:
@@ -436,7 +444,7 @@ async def modify_stop_loss(
 @app.delete("/stop-loss/{order_id}")
 async def cancel_stop_loss(
     order_id: str,
-    db: RiskManagementDatabase = Depends(get_database)
+    db: RiskPostgresDatabase = Depends(get_database)
 ):
     """Cancel a stop-loss order"""
     try:
@@ -461,7 +469,7 @@ async def cancel_stop_loss(
 
 @app.get("/portfolio/risk-metrics")
 async def get_portfolio_risk_metrics(
-    db: RiskManagementDatabase = Depends(get_database)
+    db: RiskPostgresDatabase = Depends(get_database)
 ):
     """
     Get comprehensive portfolio risk metrics
@@ -510,7 +518,7 @@ async def get_portfolio_risk_metrics(
 @app.get("/portfolio/risk-alerts")
 async def get_risk_alerts(
     active_only: bool = Query(True, description="Return only active alerts"),
-    db: RiskManagementDatabase = Depends(get_database)
+    db: RiskPostgresDatabase = Depends(get_database)
 ):
     """Get current risk alerts and limit breaches"""
     try:
@@ -545,7 +553,7 @@ async def get_risk_alerts(
 
 @app.get("/portfolio/dashboard")
 async def get_risk_dashboard(
-    db: RiskManagementDatabase = Depends(get_database)
+    db: RiskPostgresDatabase = Depends(get_database)
 ):
     """
     Get comprehensive risk dashboard data
@@ -571,7 +579,7 @@ async def get_risk_dashboard(
 
 @app.post("/portfolio/rebalance-suggestions")
 async def get_rebalancing_suggestions(
-    db: RiskManagementDatabase = Depends(get_database)
+    db: RiskPostgresDatabase = Depends(get_database)
 ):
     """Get AI-generated portfolio rebalancing suggestions to reduce risk"""
     try:
@@ -590,7 +598,7 @@ async def get_rebalancing_suggestions(
 @app.post("/portfolio/real-time-risk")
 async def monitor_real_time_risk(
     price_updates: PriceUpdateModel,
-    db: RiskManagementDatabase = Depends(get_database)
+    db: RiskPostgresDatabase = Depends(get_database)
 ):
     """
     Real-time portfolio risk monitoring with price updates
@@ -640,7 +648,7 @@ async def get_risk_limits():
 @app.put("/config/risk-limits")
 async def update_risk_limits(
     limits: RiskLimitsModel,
-    db: RiskManagementDatabase = Depends(get_database)
+    db: RiskPostgresDatabase = Depends(get_database)
 ):
     """Update risk management configuration limits (admin only)"""
     try:

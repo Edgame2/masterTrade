@@ -13,11 +13,10 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 import structlog
 
-sys.path.append('../shared')
-from price_prediction_client import PricePredictionClient
+from shared.price_prediction_client import PricePredictionClient
 
 from config import settings
-from database import RiskManagementDatabase
+from database import RiskPostgresDatabase
 from position_sizing import PositionSizingEngine
 from stop_loss_manager import StopLossManager
 from portfolio_risk_controller import PortfolioRiskController
@@ -45,8 +44,8 @@ class RiskManagementService:
         self.stop_loss_manager = None
         self.portfolio_controller = None
         self.message_handler = None
+        self.price_prediction_client: Optional[PricePredictionClient] = None
         self.running = False
-    self.price_prediction_client: Optional[PricePredictionClient] = None
         
     async def initialize(self):
         """Initialize all service components"""
@@ -54,7 +53,7 @@ class RiskManagementService:
             logger.info("Initializing Risk Management Service")
             
             # Initialize database
-            self.database = RiskManagementDatabase()
+            self.database = RiskPostgresDatabase()
             await self.database.initialize()
 
             # Initialize price prediction client
@@ -126,7 +125,14 @@ class RiskManagementService:
                     break
                 
                 # Calculate current risk metrics
-                risk_metrics = await self.portfolio_controller.calculate_portfolio_risk()
+                try:
+                    risk_metrics = await self.portfolio_controller.calculate_portfolio_risk()
+                except ValueError as ve:
+                    # Handle empty portfolio or circular reference gracefully
+                    if "Circular reference" in str(ve) or "empty" in str(ve).lower():
+                        logger.debug("No active positions for risk calculation")
+                        continue
+                    raise
                 
                 # Check for limit breaches
                 alerts = await self.portfolio_controller.check_risk_limits()
@@ -338,8 +344,8 @@ async def main():
         
         config = uvicorn.Config(
             app,
-            host=settings.RISK_SERVICE_HOST,
-            port=settings.RISK_SERVICE_PORT,
+            host=settings.HOST,
+            port=settings.PORT,
             log_level="info",
             access_log=True,
             loop="asyncio"
@@ -349,8 +355,8 @@ async def main():
         
         logger.info(
             f"Starting Risk Management Service",
-            host=settings.RISK_SERVICE_HOST,
-            port=settings.RISK_SERVICE_PORT
+            host=settings.HOST,
+            port=settings.PORT
         )
         
         await server.serve()

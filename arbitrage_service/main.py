@@ -23,12 +23,12 @@ from web3 import AsyncWeb3
 import networkx as nx
 
 from config import settings
-from database import Database
+from database import ArbitragePostgresDatabase
 from models import ArbitrageOpportunity, CrossChainRoute, DEXPrice, FlashLoanOpportunity
-from dex_handlers import UniswapV2Handler, UniswapV3Handler, CurveHandler, BalancerHandler
-from flash_loan_handler import FlashLoanHandler
-from gas_optimizer import GasOptimizer
-from cross_chain_monitor import CrossChainMonitor
+# from dex_handlers import UniswapV2Handler, UniswapV3Handler, CurveHandler, BalancerHandler
+# from flash_loan_handler import FlashLoanHandler
+# from gas_optimizer import GasOptimizer
+# from cross_chain_monitor import CrossChainMonitor
 
 # Configure structured logging
 structlog.configure(
@@ -63,7 +63,7 @@ class ArbitrageService:
     """Main service class for arbitrage detection and execution"""
     
     def __init__(self):
-        self.database = Database()
+        self.database = ArbitragePostgresDatabase()
         self.rabbitmq_connection: Optional[aio_pika.Connection] = None
         self.rabbitmq_channel: Optional[aio_pika.Channel] = None
         self.exchanges: Dict[str, aio_pika.Exchange] = {}
@@ -78,9 +78,9 @@ class ArbitrageService:
         self.dex_handlers: Dict[str, Dict] = {}
         
         # Specialized handlers
-        self.flash_loan_handler = FlashLoanHandler()
-        self.gas_optimizer = GasOptimizer()
-        self.cross_chain_monitor = CrossChainMonitor()
+        self.flash_loan_handler = None  # FlashLoanHandler() - disabled, module not implemented
+        self.gas_optimizer = None  # GasOptimizer() - disabled, module not implemented
+        self.cross_chain_monitor = None  # CrossChainMonitor() - disabled, module not implemented
         
         # Price tracking
         self.price_cache: Dict[str, Dict] = {}

@@ -29,7 +29,7 @@ from scipy import stats
 from collections import defaultdict
 
 from config import settings, get_asset_class, get_risk_multiplier
-from database import RiskManagementDatabase
+from database import RiskPostgresDatabase
 from position_sizing import PositionSizingEngine, PositionSizeRequest, PositionSizeResult
 from stop_loss_manager import StopLossManager, StopLossConfig, StopLossType
 from portfolio_risk_controller import (
@@ -151,7 +151,7 @@ class AdvancedRiskController:
     
     def __init__(
         self,
-        database: RiskManagementDatabase,
+        database: RiskPostgresDatabase,
         position_sizing: PositionSizingEngine,
         stop_loss_manager: StopLossManager,
         portfolio_controller: PortfolioRiskController

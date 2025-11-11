@@ -73,10 +73,59 @@ class Settings(BaseSettings):
     YAHOO_FINANCE_ENABLED: bool = True  # Yahoo Finance as backup/primary source
     FINNHUB_API_KEY: str = ""  # Finnhub API key for additional data
     
-    # Macro-Economic Data Configuration
-    FRED_API_KEY: str = ""  # Federal Reserve Economic Data API key
-    MACRO_ECONOMIC_ENABLED: bool = True  # Enable macro-economic data collection
-    FEAR_GREED_ENABLED: bool = True  # Enable Fear & Greed Index collection
+    # Macro Economic Data Sources
+    FRED_API_KEY: str = ""
+    FRED_API_URL: str = "https://api.stlouisfed.org/fred"
+    
+    # On-Chain Data Sources
+    MORALIS_API_KEY: str = ""
+    MORALIS_API_URL: str = "https://deep-index.moralis.io/api/v2.2"
+    MORALIS_RATE_LIMIT: float = 3.0  # requests per second (free tier: 3 req/s)
+    
+    GLASSNODE_API_KEY: str = ""
+    GLASSNODE_API_URL: str = "https://api.glassnode.com"
+    GLASSNODE_RATE_LIMIT: float = 1.0  # requests per second (varies by tier)
+    
+    NANSEN_API_KEY: str = ""
+    NANSEN_API_URL: str = "https://api.nansen.ai"
+    NANSEN_RATE_LIMIT: float = 2.0  # requests per second
+    
+    # On-Chain Collection Configuration
+    ONCHAIN_COLLECTION_ENABLED: bool = False  # Enable on-chain data collection
+    ONCHAIN_COLLECTION_INTERVAL: int = 3600  # Collection interval in seconds (1 hour)
+    ONCHAIN_WHALE_THRESHOLD_BTC: float = 1000.0  # BTC threshold for whale detection
+    ONCHAIN_WHALE_THRESHOLD_ETH: float = 10000.0  # ETH threshold for whale detection
+    ONCHAIN_WHALE_THRESHOLD_USD: float = 1000000.0  # USD threshold for whale detection
+    
+    # Social Media Data Sources
+    TWITTER_API_KEY: str = ""
+    TWITTER_API_SECRET: str = ""
+    TWITTER_BEARER_TOKEN: str = ""
+    TWITTER_RATE_LIMIT: float = 1.0  # requests per second (Basic tier: 300/15min = 0.33/s)
+    
+    REDDIT_CLIENT_ID: str = ""
+    REDDIT_CLIENT_SECRET: str = ""
+    REDDIT_USER_AGENT: str = "MasterTrade/1.0"
+    REDDIT_RATE_LIMIT: float = 0.5  # requests per second (60/min = 1/s, we use 0.5 to be safe)
+    
+    LUNARCRUSH_API_KEY: str = ""
+    LUNARCRUSH_API_URL: str = "https://api.lunarcrush.com/v2"
+    LUNARCRUSH_RATE_LIMIT: float = 0.2  # requests per second (free tier limited)
+    
+    # Social Collection Configuration
+    SOCIAL_COLLECTION_ENABLED: bool = False  # Enable social sentiment collection
+    SOCIAL_COLLECTION_INTERVAL: int = 3600  # Collection interval in seconds (1 hour)
+    SOCIAL_USE_FINBERT: bool = False  # Use FinBERT for sentiment analysis (requires transformers)
+    SOCIAL_MIN_ENGAGEMENT: int = 10  # Minimum engagement score to store post
+    
+    # Redis Configuration
+    REDIS_URL: str = "redis://localhost:6379"
+    REDIS_MAX_CONNECTIONS: int = 50
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
+        extra = "ignore"  # Ignore extra fields from .env
     
     # Major Stock Indices to Track
     STOCK_INDICES: List[str] = [

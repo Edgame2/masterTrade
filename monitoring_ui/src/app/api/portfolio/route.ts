@@ -1,20 +1,24 @@
-import { getContainer } from '../../../lib/cosmos';
+export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
   try {
-    const container = await getContainer('Positions');
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    const url = `${apiUrl}/api/positions`;
     
-    const query = `
-      SELECT * FROM c 
-      WHERE c.status = 'OPEN' 
-      ORDER BY c.opened_at DESC
-    `;
+    const response = await fetch(url, {
+      cache: 'no-store',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
     
-    const { resources } = await container.items
-      .query(query)
-      .fetchAll();
+    if (!response.ok) {
+      throw new Error(`API responded with status ${response.status}`);
+    }
     
-    const positions = resources;
+    const data = await response.json();
+    
+    const positions = data.positions || [];
     
     // Calculate portfolio summary
     const totalValue = positions.reduce((sum: number, pos: any) => sum + (pos.current_price * pos.size || 0), 0);

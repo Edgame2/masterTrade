@@ -748,6 +748,240 @@ def create_strategy_api(strategy_service) -> FastAPI:
             media_type=CONTENT_TYPE_LATEST
         )
     
+    # ====================================================================
+    # Strategy Generation API Endpoints
+    # ====================================================================
+    
+    class GenerateStrategiesRequest(BaseModel):
+        num_strategies: int = 100
+        config: Optional[Dict] = None
+    
+    class GenerationJobResponse(BaseModel):
+        job_id: str
+        status: str
+        message: str
+    
+    class GenerationProgressResponse(BaseModel):
+        job_id: str
+        status: str
+        total_strategies: int
+        strategies_generated: int
+        strategies_backtested: int
+        strategies_passed: int
+        strategies_failed: int
+        current_strategy: Optional[str] = None
+        error_message: Optional[str] = None
+        started_at: Optional[datetime] = None
+        completed_at: Optional[datetime] = None
+        estimated_completion: Optional[datetime] = None
+    
+    class BacktestSummary(BaseModel):
+        strategy_id: str
+        win_rate: float
+        sharpe_ratio: float
+        cagr: float
+        max_drawdown: float
+        total_trades: int
+        monthly_returns: List[float]
+        passed_criteria: bool
+    
+    class GenerationResultsResponse(BaseModel):
+        job_id: str
+        status: str
+        total_strategies: int
+        strategies_passed: int
+        strategies_failed: int
+        backtest_results: List[BacktestSummary]
+        started_at: Optional[str] = None
+        completed_at: Optional[str] = None
+    
+    class JobListItem(BaseModel):
+        job_id: str
+        status: str
+        total_strategies: int
+        strategies_generated: int
+        strategies_backtested: int
+        started_at: datetime
+        completed_at: Optional[datetime]
+    
+    @app.post("/api/v1/strategies/generate", response_model=GenerationJobResponse, tags=["strategy-generation"])
+    async def generate_strategies(request: GenerateStrategiesRequest):
+        """
+        Start a new strategy generation job
+        
+        - **num_strategies**: Number of strategies to generate (default: 100)
+        - **config**: Optional configuration parameters for generation
+        """
+        try:
+            if not hasattr(strategy_service, 'generation_manager') or not strategy_service.generation_manager:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Strategy generation manager not initialized"
+                )
+            
+            if request.num_strategies < 1 or request.num_strategies > 1000:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Number of strategies must be between 1 and 1000"
+                )
+            
+            job_id = await strategy_service.generation_manager.start_generation_job(
+                num_strategies=request.num_strategies,
+                strategy_config=request.config or {}
+            )
+            
+            return GenerationJobResponse(
+                job_id=job_id,
+                status="PENDING",
+                message=f"Generation job started for {request.num_strategies} strategies"
+            )
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error starting generation job: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to start generation job: {str(e)}"
+            )
+    
+    @app.get("/api/v1/strategies/jobs/{job_id}/progress", response_model=GenerationProgressResponse, tags=["strategy-generation"])
+    async def get_generation_progress(job_id: str):
+        """
+        Get current progress of a strategy generation job
+        
+        - **job_id**: Unique identifier of the generation job
+        """
+        try:
+            if not hasattr(strategy_service, 'generation_manager') or not strategy_service.generation_manager:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Strategy generation manager not initialized"
+                )
+            
+            progress = await strategy_service.generation_manager.get_job_progress(job_id)
+            
+            if not progress:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Generation job {job_id} not found"
+                )
+            
+            return GenerationProgressResponse(**progress)
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting generation progress: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get generation progress: {str(e)}"
+            )
+    
+    @app.get("/api/v1/strategies/jobs/{job_id}/results", response_model=GenerationResultsResponse, tags=["strategy-generation"])
+    async def get_generation_results(job_id: str):
+        """
+        Get final results of a completed strategy generation job
+        
+        - **job_id**: Unique identifier of the generation job
+        """
+        try:
+            if not hasattr(strategy_service, 'generation_manager') or not strategy_service.generation_manager:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Strategy generation manager not initialized"
+                )
+            
+            results = await strategy_service.generation_manager.get_job_results(job_id)
+            
+            if not results:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Generation job {job_id} not found or not completed"
+                )
+            
+            return GenerationResultsResponse(**results)
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting generation results: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get generation results: {str(e)}"
+            )
+    
+    @app.get("/api/v1/strategies/jobs", response_model=List[JobListItem], tags=["strategy-generation"])
+    async def list_generation_jobs(
+        status_filter: Optional[str] = Query(None, description="Filter by status (PENDING, GENERATING, BACKTESTING, COMPLETED, FAILED, CANCELLED)"),
+        limit: int = Query(50, ge=1, le=100, description="Maximum number of jobs to return")
+    ):
+        """
+        List all strategy generation jobs
+        
+        - **status_filter**: Optional filter by job status
+        - **limit**: Maximum number of jobs to return (1-100)
+        """
+        try:
+            if not hasattr(strategy_service, 'generation_manager') or not strategy_service.generation_manager:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Strategy generation manager not initialized"
+                )
+            
+            jobs = await strategy_service.generation_manager.list_jobs(
+                status_filter=status_filter,
+                limit=limit
+            )
+            
+            return [JobListItem(**job) for job in jobs]
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error listing generation jobs: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to list generation jobs: {str(e)}"
+            )
+    
+    @app.delete("/api/v1/strategies/jobs/{job_id}", tags=["strategy-generation"])
+    async def cancel_generation_job(job_id: str):
+        """
+        Cancel a running strategy generation job
+        
+        - **job_id**: Unique identifier of the generation job
+        """
+        try:
+            if not hasattr(strategy_service, 'generation_manager') or not strategy_service.generation_manager:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Strategy generation manager not initialized"
+                )
+            
+            success = await strategy_service.generation_manager.cancel_job(job_id)
+            
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Generation job {job_id} not found or cannot be cancelled"
+                )
+            
+            return {
+                "job_id": job_id,
+                "status": "CANCELLED",
+                "message": "Generation job cancelled successfully"
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error cancelling generation job: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to cancel generation job: {str(e)}"
+            )
+    
     # Include enhanced strategy activation router
     if hasattr(strategy_service, 'enhanced_activation_system') and strategy_service.enhanced_activation_system:
         set_activation_system(strategy_service.enhanced_activation_system)

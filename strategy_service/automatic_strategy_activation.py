@@ -30,8 +30,8 @@ class StrategyCandidate:
     market_alignment_score: float
     risk_score: float
     sentiment_alignment_score: float
-    sentiment_context: Dict[str, Any] = field(default_factory=dict)
     overall_score: float
+    sentiment_context: Dict[str, Any] = field(default_factory=dict)
 
 class AutomaticStrategyActivationManager:
     """

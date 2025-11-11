@@ -44,6 +44,8 @@ try:
     from technical_indicator_calculator import IndicatorCalculator
     from indicator_configuration_manager import IndicatorConfigurationManager
     from strategy_request_handler import StrategyDataRequestHandler
+    from collectors.moralis_collector import MoralisCollector
+    from collectors.glassnode_collector import GlassnodeCollector
 except ImportError as e:
     structlog.get_logger().warning("Some components unavailable, using mocks", error=str(e))
     from mock_components import (
@@ -92,6 +94,10 @@ class MarketDataService:
         self.sentiment_collector = None
         self.stock_index_collector = None
         
+        # On-chain data collectors
+        self.moralis_collector = None
+        self.glassnode_collector = None
+        
         # Technical indicator system
         self.indicator_calculator = None
         self.indicator_config_manager = None
@@ -114,9 +120,9 @@ class MarketDataService:
         self.websocket_tasks: List[asyncio.Task] = []
         self.scheduled_tasks: List[asyncio.Task] = []
 
-    # Binance websocket manager
-    self.binance_client: Optional[AsyncClient] = None
-    self.socket_manager: Optional[BinanceSocketManager] = None
+        # Binance websocket manager
+        self.binance_client: Optional[AsyncClient] = None
+        self.socket_manager: Optional[BinanceSocketManager] = None
         
     async def initialize(self):
         """Initialize all connections and services"""
@@ -165,6 +171,30 @@ class MarketDataService:
                 self.stock_index_collector = StockIndexDataCollector(self.database)
                 await self.stock_index_collector.connect()
                 logger.info("Stock index collector initialized")
+            
+            # Initialize on-chain collectors
+            if settings.ONCHAIN_COLLECTION_ENABLED:
+                if settings.MORALIS_API_KEY:
+                    self.moralis_collector = MoralisCollector(
+                        database=self.database,
+                        api_key=settings.MORALIS_API_KEY,
+                        rate_limit=settings.MORALIS_RATE_LIMIT
+                    )
+                    await self.moralis_collector.connect()
+                    logger.info("Moralis on-chain collector initialized")
+                else:
+                    logger.warning("MORALIS_API_KEY not set - Moralis collector disabled")
+                
+                if settings.GLASSNODE_API_KEY:
+                    self.glassnode_collector = GlassnodeCollector(
+                        database=self.database,
+                        api_key=settings.GLASSNODE_API_KEY,
+                        rate_limit=settings.GLASSNODE_RATE_LIMIT
+                    )
+                    await self.glassnode_collector.connect()
+                    logger.info("Glassnode on-chain collector initialized")
+                else:
+                    logger.warning("GLASSNODE_API_KEY not set - Glassnode collector disabled")
             
             # Initialize RabbitMQ
             try:
@@ -598,6 +628,12 @@ class MarketDataService:
         if settings.STOCK_INDEX_ENABLED and hasattr(self, 'stock_index_collector') and self.stock_index_collector:
             stock_index_task = asyncio.create_task(self._start_stock_index_collection())
             self.scheduled_tasks.append(stock_index_task)
+        
+        # Start on-chain data collection (periodic)
+        if settings.ONCHAIN_COLLECTION_ENABLED and (self.moralis_collector or self.glassnode_collector):
+            onchain_task = asyncio.create_task(self._start_onchain_collection())
+            self.scheduled_tasks.append(onchain_task)
+            logger.info("On-chain data collection scheduled")
             
         # Start periodic data maintenance
         maintenance_task = asyncio.create_task(self._start_data_maintenance())
@@ -887,6 +923,135 @@ class MarketDataService:
                 
         except Exception as e:
             logger.error("Error starting stock index collection", error=str(e))
+    
+    async def _start_onchain_collection(self):
+        """Start periodic on-chain data collection"""
+        try:
+            logger.info("Starting on-chain data collection")
+            
+            # Symbols to track for on-chain data
+            onchain_symbols = ["BTC", "ETH", "USDT", "USDC"]
+            
+            while self.running:
+                try:
+                    collection_start = datetime.now(timezone.utc)
+                    
+                    # Collect whale transactions from Moralis
+                    if self.moralis_collector:
+                        try:
+                            success = await self.moralis_collector.collect(
+                                symbols=onchain_symbols,
+                                hours=1  # Collect last hour of data
+                            )
+                            
+                            if success:
+                                # Get collector stats
+                                status = await self.moralis_collector.get_status()
+                                logger.info(
+                                    "Moralis collection completed",
+                                    data_points=status['stats']['data_points_collected'],
+                                    status=status['status']
+                                )
+                                
+                                # Get recent whale transactions
+                                whale_txs = await self.database.get_whale_transactions(
+                                    hours=1,
+                                    limit=10
+                                )
+                                
+                                # Publish whale alerts to RabbitMQ
+                                if whale_txs:
+                                    for tx in whale_txs:
+                                        if tx.get('amount', 0) > settings.ONCHAIN_WHALE_THRESHOLD_USD / 40000:  # Rough USD conversion
+                                            await self._publish_to_rabbitmq(
+                                                "whale_alert",
+                                                tx,
+                                                f"onchain.whale.{tx['symbol']}"
+                                            )
+                                    
+                                    logger.info(f"Published {len(whale_txs)} whale alerts")
+                            
+                        except Exception as e:
+                            logger.error("Error in Moralis collection", error=str(e))
+                    
+                    # Small delay between collectors
+                    await asyncio.sleep(2)
+                    
+                    # Collect on-chain metrics from Glassnode
+                    if self.glassnode_collector:
+                        try:
+                            # Metrics to collect
+                            metrics = [
+                                "nvt", "mvrv", "nupl",
+                                "exchange_netflow", "exchange_inflow", "exchange_outflow",
+                                "active_addresses"
+                            ]
+                            
+                            success = await self.glassnode_collector.collect(
+                                symbols=["BTC", "ETH"],
+                                metrics=metrics,
+                                interval="24h"
+                            )
+                            
+                            if success:
+                                # Get collector stats
+                                status = await self.glassnode_collector.get_status()
+                                logger.info(
+                                    "Glassnode collection completed",
+                                    data_points=status['stats']['data_points_collected'],
+                                    status=status['status']
+                                )
+                                
+                                # Get recent metrics and publish to RabbitMQ
+                                for symbol in ["BTC", "ETH"]:
+                                    metrics_data = await self.database.get_onchain_metrics(
+                                        symbol=symbol,
+                                        hours=2,
+                                        limit=10
+                                    )
+                                    
+                                    if metrics_data:
+                                        # Create metrics summary
+                                        summary = {
+                                            "symbol": symbol,
+                                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                                            "metrics": {}
+                                        }
+                                        
+                                        for metric in metrics_data:
+                                            metric_name = metric.get('metric_name')
+                                            if metric_name:
+                                                summary["metrics"][metric_name] = {
+                                                    "value": metric.get('value'),
+                                                    "category": metric.get('metric_category'),
+                                                    "timestamp": metric.get('timestamp')
+                                                }
+                                        
+                                        # Publish to RabbitMQ
+                                        await self._publish_to_rabbitmq(
+                                            "onchain_metrics",
+                                            summary,
+                                            f"onchain.metrics.{symbol}"
+                                        )
+                                
+                        except Exception as e:
+                            logger.error("Error in Glassnode collection", error=str(e))
+                    
+                    # Log collection cycle duration
+                    duration = (datetime.now(timezone.utc) - collection_start).total_seconds()
+                    logger.info(
+                        "On-chain collection cycle completed",
+                        duration_seconds=duration
+                    )
+                    
+                except Exception as e:
+                    logger.error("Error in on-chain collection cycle", error=str(e))
+                    
+                # Wait for next collection cycle
+                await asyncio.sleep(settings.ONCHAIN_COLLECTION_INTERVAL)
+                
+        except Exception as e:
+            logger.error("Error starting on-chain collection", error=str(e))
             
     async def _get_stock_market_summary(self, current_data: List[Dict]) -> Dict:
         """Generate stock market summary from current data"""
@@ -1031,6 +1196,15 @@ class MarketDataService:
             
         if hasattr(self, 'stock_index_collector') and self.stock_index_collector:
             await self.stock_index_collector.disconnect()
+        
+        # Close on-chain collectors
+        if hasattr(self, 'moralis_collector') and self.moralis_collector:
+            await self.moralis_collector.disconnect()
+            logger.info("Moralis collector disconnected")
+            
+        if hasattr(self, 'glassnode_collector') and self.glassnode_collector:
+            await self.glassnode_collector.disconnect()
+            logger.info("Glassnode collector disconnected")
 
         if self.socket_manager:
             try:
@@ -1062,10 +1236,116 @@ class MarketDataService:
 async def health_check(request):
     return web.json_response({'status': 'healthy', 'service': 'market_data_service'})
 
+async def get_whale_transactions(request):
+    """Get recent whale transactions"""
+    try:
+        service = request.app['service']
+        
+        # Get query parameters
+        symbol = request.query.get('symbol', None)
+        hours = int(request.query.get('hours', 24))
+        min_amount = float(request.query.get('min_amount', 0)) if request.query.get('min_amount') else None
+        limit = int(request.query.get('limit', 100))
+        
+        # Query database
+        transactions = await service.database.get_whale_transactions(
+            symbol=symbol,
+            hours=hours,
+            min_amount=min_amount,
+            limit=limit
+        )
+        
+        return web.json_response({
+            'success': True,
+            'count': len(transactions),
+            'transactions': transactions
+        })
+        
+    except Exception as e:
+        logger.error("Error getting whale transactions", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def get_onchain_metrics(request):
+    """Get on-chain metrics"""
+    try:
+        service = request.app['service']
+        
+        # Get query parameters
+        symbol = request.query.get('symbol', 'BTC')
+        metric_name = request.query.get('metric_name', None)
+        hours = int(request.query.get('hours', 24))
+        limit = int(request.query.get('limit', 100))
+        
+        # Query database
+        metrics = await service.database.get_onchain_metrics(
+            symbol=symbol,
+            metric_name=metric_name,
+            hours=hours,
+            limit=limit
+        )
+        
+        return web.json_response({
+            'success': True,
+            'symbol': symbol,
+            'count': len(metrics),
+            'metrics': metrics
+        })
+        
+    except Exception as e:
+        logger.error("Error getting on-chain metrics", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def get_collector_health(request):
+    """Get collector health status"""
+    try:
+        service = request.app['service']
+        
+        # Get query parameters
+        collector_name = request.query.get('collector', None)
+        hours = int(request.query.get('hours', 24))
+        
+        # Query database
+        health_logs = await service.database.get_collector_health(
+            collector_name=collector_name,
+            hours=hours
+        )
+        
+        # Get current collector status
+        collectors_status = {}
+        
+        if service.moralis_collector:
+            collectors_status['moralis'] = await service.moralis_collector.get_status()
+        
+        if service.glassnode_collector:
+            collectors_status['glassnode'] = await service.glassnode_collector.get_status()
+        
+        return web.json_response({
+            'success': True,
+            'current_status': collectors_status,
+            'health_logs': health_logs,
+            'count': len(health_logs)
+        })
+        
+    except Exception as e:
+        logger.error("Error getting collector health", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
 async def create_health_server():
     """Create health check server"""
     app = web.Application()
     app.router.add_get('/health', health_check)
+    app.router.add_get('/onchain/whales', get_whale_transactions)
+    app.router.add_get('/onchain/metrics', get_onchain_metrics)
+    app.router.add_get('/onchain/collectors/health', get_collector_health)
     return app
 
 async def main():
@@ -1082,15 +1362,17 @@ async def main():
     start_http_server(settings.PROMETHEUS_PORT)
     logger.info(f"Started Prometheus metrics server on port {settings.PROMETHEUS_PORT}")
     
+    # Initialize service first
+    service = MarketDataService()
+    
     # Start health check server on port 8000
     health_app = await create_health_server()
+    health_app['service'] = service  # Store service reference for endpoints
     health_runner = web.AppRunner(health_app)
     await health_runner.setup()
     health_site = web.TCPSite(health_runner, '0.0.0.0', 8000)
     await health_site.start()
     logger.info("Started health check server on port 8000")
-    
-    service = MarketDataService()
     
     try:
         await service.initialize()

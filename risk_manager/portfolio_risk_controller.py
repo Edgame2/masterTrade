@@ -16,7 +16,7 @@ from enum import Enum
 import structlog
 
 from config import settings, get_asset_class, get_risk_multiplier
-from database import RiskManagementDatabase
+from database import RiskPostgresDatabase
 
 logger = structlog.get_logger()
 
@@ -122,7 +122,7 @@ class PortfolioRiskController:
     - Automated risk rebalancing
     """
     
-    def __init__(self, database: RiskManagementDatabase):
+    def __init__(self, database: RiskPostgresDatabase):
         self.database = database
         self.current_alerts: Dict[str, RiskAlert] = {}
         

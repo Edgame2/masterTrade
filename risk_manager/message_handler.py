@@ -16,7 +16,7 @@ from aio_pika import Message, DeliveryMode
 import structlog
 
 from config import settings
-from database import RiskManagementDatabase
+from database import RiskPostgresDatabase
 from position_sizing import PositionSizingEngine, PositionSizeRequest, PositionSizeResult
 from stop_loss_manager import StopLossManager, StopLossConfig, StopLossType
 from portfolio_risk_controller import PortfolioRiskController
@@ -93,7 +93,7 @@ class RiskMessageHandler:
     
     def __init__(
         self,
-        database: RiskManagementDatabase,
+        database: RiskPostgresDatabase,
         position_sizing_engine: PositionSizingEngine,
         stop_loss_manager: StopLossManager,
         portfolio_controller: PortfolioRiskController
@@ -114,14 +114,8 @@ class RiskMessageHandler:
         try:
             logger.info("Initializing RabbitMQ connection for risk management")
             
-            # Establish connection
-            self.connection = await aio_pika.connect_robust(
-                host=settings.RABBITMQ_HOST,
-                port=settings.RABBITMQ_PORT,
-                login=settings.RABBITMQ_USER,
-                password=settings.RABBITMQ_PASSWORD,
-                virtualhost=settings.RABBITMQ_VHOST
-            )
+            # Establish connection using URL
+            self.connection = await aio_pika.connect_robust(settings.RABBITMQ_URL)
             
             # Create channel
             self.channel = await self.connection.channel()

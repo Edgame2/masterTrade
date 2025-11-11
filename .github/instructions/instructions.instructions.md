@@ -4,8 +4,14 @@ applyTo: '**'
 
 # IMPORTANT: 
 Do not simplify the projects. Do not remove features or code. Only improve the code as requested.
+Keep the code structure clean, organized, and modular.
+If you create documentation make sure it is in the ./doc folder.
+The system must work perfectly, do not leave anything broken.
 The database is Local postgres database. The services are microservices in python using FastAPI. The message broker is RabbitMQ. The system is containerized using Docker. The deployment platform is local. The code uses asyncio for concurrency. 
 No need to show me all the details just the most relevant parts.
+You can skip: Summarizing conversation history unless specifically asked for it.
+Strategy generation must be fully automated as per requirements below. Must have full pipeline for generation, backtesting, learning, filtering, paper trading, activation, monitoring, and replacement of strategies. Must use genetic algorithms, reinforcement learning, statistical analysis, and LSTM-Transformer price predictions as described.
+
 
 ## System Requirements
 

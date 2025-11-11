@@ -15,11 +15,10 @@ from dataclasses import dataclass
 import numpy as np
 import structlog
 
-sys.path.append('../shared')
-from price_prediction_client import PricePredictionClient
+from shared.price_prediction_client import PricePredictionClient
 
 from config import settings, get_asset_class, get_risk_multiplier
-from database import RiskManagementDatabase
+from database import RiskPostgresDatabase
 
 logger = structlog.get_logger()
 
@@ -64,7 +63,7 @@ class PositionSizingEngine:
     
     def __init__(
         self,
-        database: RiskManagementDatabase,
+        database: RiskPostgresDatabase,
         price_prediction_client: Optional[PricePredictionClient] = None
     ):
         self.database = database

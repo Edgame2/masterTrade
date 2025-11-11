@@ -90,3 +90,149 @@ class Database:
     async def get_market_data(self, symbol: str, limit: int = 100) -> List[Dict[str, Any]]:
         """Placeholder: fetch from market_data_service API."""
         return []
+
+    async def get_portfolio_balance(self) -> Dict[str, Any]:
+        """Get current portfolio balance from database."""
+        if not self._connected:
+            await self.connect()
+        
+        try:
+            query = """
+                SELECT 
+                    asset,
+                    free_balance,
+                    locked_balance,
+                    (free_balance + locked_balance) as total_balance,
+                    updated_at
+                FROM portfolio_balances
+                ORDER BY (free_balance + locked_balance) DESC
+            """
+            rows = await self._postgres.fetch(query)
+            
+            balances = []
+            total_value = 0.0
+            
+            for row in rows:
+                balance = {
+                    "asset": row["asset"],
+                    "free": float(row["free_balance"]),
+                    "locked": float(row["locked_balance"]),
+                    "total": float(row["total_balance"]),
+                    "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+                }
+                balances.append(balance)
+                # For now, assume USDT/USD equivalence for total value
+                if row["asset"] in ("USDT", "USD", "USDC", "BUSD"):
+                    total_value += float(row["total_balance"])
+            
+            return {
+                "balances": balances,
+                "total_value_usd": total_value,
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            logger.error("Error fetching portfolio balance", error=str(e))
+            # Return empty balance instead of raising
+            return {
+                "balances": [],
+                "total_value_usd": 0.0,
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            }
+
+    async def get_all_strategies(self) -> List[Dict[str, Any]]:
+        """Get all strategies from database."""
+        if not self._connected:
+            await self.connect()
+        
+        try:
+            query = """
+                SELECT 
+                    id,
+                    name,
+                    type,
+                    is_active,
+                    status,
+                    allocation,
+                    created_at,
+                    updated_at
+                FROM strategies
+                ORDER BY created_at DESC
+            """
+            rows = await self._postgres.fetch(query)
+            
+            strategies = []
+            for row in rows:
+                strategy = {
+                    "id": str(row["id"]),
+                    "name": row["name"],
+                    "type": row["type"],
+                    "is_active": row["is_active"],
+                    "status": row["status"],
+                    "allocation": float(row["allocation"]) if row["allocation"] else 0.0,
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+                }
+                strategies.append(strategy)
+            
+            return strategies
+        except Exception as e:
+            logger.error("Error fetching strategies", error=str(e))
+            return []
+
+    async def get_all_symbols(self, include_inactive: bool = False) -> List[Dict[str, Any]]:
+        """Get all trading symbols from database."""
+        if not self._connected:
+            await self.connect()
+        
+        try:
+            # Query the symbols table which stores data in JSONB format
+            if include_inactive:
+                query = """
+                    SELECT 
+                        id,
+                        data,
+                        created_at,
+                        updated_at
+                    FROM symbols
+                    ORDER BY id
+                """
+            else:
+                query = """
+                    SELECT 
+                        id,
+                        data,
+                        created_at,
+                        updated_at
+                    FROM symbols
+                    WHERE (data->>'is_active')::boolean = TRUE
+                    ORDER BY id
+                """
+            
+            rows = await self._postgres.fetch(query)
+            
+            symbols = []
+            for row in rows:
+                # Extract symbol data from JSONB (parse if string)
+                data = row["data"]
+                if isinstance(data, str):
+                    import json
+                    data = json.loads(data)
+                
+                symbol = {
+                    "symbol": row["id"],  # id is the symbol name
+                    "exchange": data.get("exchange", "binance"),
+                    "is_active": data.get("is_active", True),
+                    "base_asset": data.get("base_asset"),
+                    "quote_asset": data.get("quote_asset"),
+                    "price_precision": data.get("price_precision"),
+                    "quantity_precision": data.get("quantity_precision"),
+                    "min_notional": float(data["min_notional"]) if data.get("min_notional") else None,
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+                }
+                symbols.append(symbol)
+            
+            return symbols
+        except Exception as e:
+            logger.error("Error fetching symbols", error=str(e))
+            return []

@@ -1,32 +1,37 @@
-import { getContainer } from '../../../lib/cosmos';
+export const dynamic = 'force-dynamic';
 
-// API endpoint to fetch strategies from Cosmos DB
+// API endpoint to fetch strategies from backend API Gateway
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
     
-    const container = await getContainer('Strategies');
-    
-    let query = 'SELECT * FROM c';
-    const parameters: any[] = [];
-    
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    const url = new URL(`${apiUrl}/api/strategies`);
     if (status) {
-      query += ' WHERE c.status = @status';
-      parameters.push({ name: '@status', value: status });
+      url.searchParams.set('status', status);
     }
     
-    query += ' ORDER BY c.performance_score DESC';
+    const response = await fetch(url.toString(), {
+      cache: 'no-store',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
     
-    const { resources } = await container.items
-      .query({ query, parameters })
-      .fetchAll();
+    if (!response.ok) {
+      throw new Error(`API responded with status ${response.status}`);
+    }
     
-    return Response.json({ strategies: resources });
+    const data = await response.json();
+    return Response.json(data);
   } catch (error) {
     console.error('Error fetching strategies:', error);
     
-    // Fallback to mock data if Cosmos DB is not available
+    // Fallback to mock data if backend is not available
+    const { searchParams } = new URL(request.url);
+    const status = searchParams.get('status');
+    
     const mockStrategies = [
       {
         id: '1',

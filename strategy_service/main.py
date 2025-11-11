@@ -164,7 +164,7 @@ try:
     sys.path.append('../shared')
     from enhanced_market_data_consumer import EnhancedMarketDataConsumer, MarketDataMessage
 except ImportError as e:
-    logger.warning("Market data consumer not available, using mock", error=str(e))
+    # Market data consumer not available, using mock
     class EnhancedMarketDataConsumer:
         def __init__(self, *args, **kwargs): pass
         async def connect(self): pass
@@ -296,6 +296,20 @@ class StrategyService:
                 logger.info("AI/ML components initialized")
             except Exception as e:
                 logger.warning("AI/ML components unavailable", error=str(e))
+            
+            # Initialize strategy generation manager (always)
+            # This is critical for UI-driven strategy generation
+            try:
+                from strategy_generation_api import StrategyGenerationManager
+                self.generation_manager = StrategyGenerationManager(
+                    database=self.database,
+                    strategy_generator=getattr(self, 'strategy_generator', None),
+                    backtest_engine=getattr(getattr(self, 'automatic_pipeline', None), 'backtest_engine', None)
+                )
+                logger.info("Strategy generation manager initialized and ready")
+            except Exception as e:
+                logger.error(f"Failed to initialize strategy generation manager: {e}")
+                self.generation_manager = None
             
             # Load strategies from database
             try:
@@ -642,12 +656,13 @@ class StrategyService:
         try:
             self.running = True
             
-            # Start enhanced market data consumer for comprehensive data
-            if self.market_data_consumer:
-                market_data_task = asyncio.create_task(
-                    self.market_data_consumer.start_consuming_all_market_data()
-                )
-                self.consumer_tasks.append(market_data_task)
+            # Enhanced market data consumer handles its own background tasks
+            # No need to explicitly start consuming - initialized in initialize()
+            # if self.market_data_consumer:
+            #     market_data_task = asyncio.create_task(
+            #         self.market_data_consumer.start_consuming_all_market_data()
+            #     )
+            #     self.consumer_tasks.append(market_data_task)
             
             # Keep the original market data consumer for backward compatibility
             market_queue = await self.rabbitmq_channel.declare_queue(
@@ -1057,7 +1072,10 @@ class StrategyService:
         
         # Disconnect market data consumer
         if self.market_data_consumer:
-            await self.market_data_consumer.disconnect()
+            try:
+                await self.market_data_consumer.close()
+            except AttributeError:
+                pass  # close() method not available
         
         # Close connections
         if self.rabbitmq_connection:

@@ -1,4 +1,4 @@
-import { getContainer } from '../../../lib/cosmos';
+export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
   try {
@@ -6,24 +6,26 @@ export async function GET(request: Request) {
     const strategyId = searchParams.get('strategyId');
     const limit = parseInt(searchParams.get('limit') || '100');
     
-    const container = await getContainer('StrategyPerformance');
-    
-    let query = 'SELECT * FROM c';
-    const parameters: any[] = [];
-    
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    const url = new URL(`${apiUrl}/api/performance`);
     if (strategyId) {
-      query += ' WHERE c.strategy_id = @strategyId';
-      parameters.push({ name: '@strategyId', value: strategyId });
+      url.searchParams.set('strategyId', strategyId);
+    }
+    url.searchParams.set('limit', limit.toString());
+    
+    const response = await fetch(url.toString(), {
+      cache: 'no-store',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    if (!response.ok) {
+      throw new Error(`API responded with status ${response.status}`);
     }
     
-    query += ' ORDER BY c.timestamp DESC';
-    query += ` OFFSET 0 LIMIT ${limit}`;
-    
-    const { resources } = await container.items
-      .query({ query, parameters })
-      .fetchAll();
-    
-    return Response.json({ performance: resources });
+    const data = await response.json();
+    return Response.json(data);
   } catch (error) {
     console.error('Error fetching performance data:', error);
     

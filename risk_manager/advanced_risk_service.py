@@ -7,10 +7,10 @@ service, providing seamless coordination between all risk components.
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any
 import structlog
 
-from database import RiskManagementDatabase
+from database import RiskPostgresDatabase
 from position_sizing import PositionSizingEngine
 from stop_loss_manager import StopLossManager
 from portfolio_risk_controller import PortfolioRiskController
@@ -37,7 +37,7 @@ class AdvancedRiskManagementService:
     
     def __init__(self):
         # Initialize database
-        self.database = RiskManagementDatabase()
+        self.database = RiskPostgresDatabase()
         
         # Initialize core components
         self.position_sizing = PositionSizingEngine(self.database)
@@ -163,7 +163,7 @@ class AdvancedRiskManagementService:
         strategy_id: str,
         signal_strength: float,
         current_price: float
-    ) -> Dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Get position size recommendation without full approval process
         
@@ -226,7 +226,7 @@ class AdvancedRiskManagementService:
         self,
         position_id: str,
         new_stop_price: Optional[float] = None
-    ) -> Dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Update stop-loss for a position
         
@@ -266,7 +266,7 @@ class AdvancedRiskManagementService:
             return {'success': False, 'error': str(e)}
     
     
-    async def get_risk_status(self) -> Dict[str, any]:
+    async def get_risk_status(self) -> Dict[str, Any]:
         """
         Get comprehensive risk status for monitoring
         
@@ -283,7 +283,7 @@ class AdvancedRiskManagementService:
             return {'success': False, 'error': str(e)}
     
     
-    async def override_circuit_breaker(self, level: str, reason: str) -> Dict[str, any]:
+    async def override_circuit_breaker(self, level: str, reason: str) -> Dict[str, Any]:
         """
         Manual override of circuit breaker (use with extreme caution)
         
@@ -322,7 +322,7 @@ class AdvancedRiskManagementService:
             return {'success': False, 'error': str(e)}
     
     
-    async def update_portfolio_limits(self, limits: Dict[str, float]) -> Dict[str, any]:
+    async def update_portfolio_limits(self, limits: Dict[str, float]) -> Dict[str, Any]:
         """
         Update portfolio risk limits
         
@@ -413,7 +413,7 @@ class AdvancedRiskManagementService:
             await asyncio.sleep(adjustment_interval)
     
     
-    async def force_adjustment_check(self) -> Dict[str, any]:
+    async def force_adjustment_check(self) -> Dict[str, Any]:
         """
         Manually trigger position adjustment check
         
@@ -432,7 +432,7 @@ class AdvancedRiskManagementService:
             return {'success': False, 'error': str(e)}
     
     
-    async def get_correlation_analysis(self, symbols: Optional[List[str]] = None) -> Dict[str, any]:
+    async def get_correlation_analysis(self, symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Get correlation analysis for portfolio or specific symbols
         

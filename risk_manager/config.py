@@ -79,6 +79,9 @@ class RiskManagementSettings(BaseSettings):
     RISK_ALERT_THRESHOLD: float = 8.0         # Risk alert threshold
     MAX_DAILY_LOSS_PERCENT: float = 5.0       # Maximum daily loss threshold
     MAX_DRAWDOWN_PERCENT: float = 15.0        # Maximum drawdown threshold
+    MAX_VAR_PERCENT: float = 10.0             # Maximum Value-at-Risk percentage
+    MAX_LEVERAGE: float = 3.0                 # Maximum leverage allowed
+    MAX_CONCENTRATION: float = 30.0           # Maximum concentration (HHI threshold)
     
     # Market Conditions Adjustments
     HIGH_VOLATILITY_THRESHOLD: float = 0.05   # High volatility threshold (5%)

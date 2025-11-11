@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import structlog
+import socketio
 from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -71,6 +72,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Socket.IO server for real-time updates
+sio = socketio.AsyncServer(
+    async_mode='asgi',
+    cors_allowed_origins=["http://localhost:3000"],
+    logger=False,
+    engineio_logger=False
+)
+
+# Wrap with Socket.IO's ASGI middleware
+socket_app = socketio.ASGIApp(sio, app)
 
 # Database instance
 database = Database()
@@ -353,6 +365,172 @@ async def update_symbol(symbol: str, updates: dict):
         logger.error("Error updating symbol", symbol=symbol, error=str(e))
         raise HTTPException(status_code=500, detail="Internal server error")
 
+# ====================================================================
+# Strategy Generation API Proxy Endpoints
+# ====================================================================
+
+@app.post("/api/strategies/generate")
+async def generate_strategies(request: dict):
+    """
+    Generate new trading strategies (proxied to strategy service)
+    
+    Request body:
+    {
+        "num_strategies": 100,  // Number of strategies to generate
+        "config": {}  // Optional configuration
+    }
+    """
+    try:
+        import httpx
+        
+        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8003")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{strategy_service_url}/api/v1/strategies/generate",
+                json=request
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            # Broadcast generation started event
+            await broadcast_update("generation_started", result)
+            
+            return result
+            
+    except httpx.HTTPError as e:
+        logger.error("Strategy service request failed", error=str(e))
+        raise HTTPException(status_code=503, detail="Strategy service unavailable")
+    except Exception as e:
+        logger.error("Error generating strategies", error=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/strategies/jobs/{job_id}/progress")
+async def get_generation_progress(job_id: str):
+    """Get progress of strategy generation job (proxied to strategy service)"""
+    try:
+        import httpx
+        
+        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8003")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{strategy_service_url}/api/v1/strategies/jobs/{job_id}/progress"
+            )
+            response.raise_for_status()
+            progress = response.json()
+            
+            # Broadcast progress update via Socket.IO
+            await sio.emit("generation_progress", {
+                "job_id": job_id,
+                **progress
+            })
+            
+            return progress
+            
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Generation job not found")
+        logger.error("Strategy service request failed", error=str(e))
+        raise HTTPException(status_code=503, detail="Strategy service unavailable")
+    except Exception as e:
+        logger.error("Error getting generation progress", error=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/strategies/jobs/{job_id}/results")
+async def get_generation_results(job_id: str):
+    """Get results of completed strategy generation job (proxied to strategy service)"""
+    try:
+        import httpx
+        
+        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8003")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{strategy_service_url}/api/v1/strategies/jobs/{job_id}/results"
+            )
+            response.raise_for_status()
+            results = response.json()
+            
+            # Broadcast results available event
+            await broadcast_update("generation_completed", {
+                "job_id": job_id,
+                "total_strategies": results.get("total_strategies"),
+                "strategies_passed": results.get("strategies_passed")
+            })
+            
+            return results
+            
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Generation job not found or not completed")
+        logger.error("Strategy service request failed", error=str(e))
+        raise HTTPException(status_code=503, detail="Strategy service unavailable")
+    except Exception as e:
+        logger.error("Error getting generation results", error=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/strategies/jobs")
+async def list_generation_jobs(
+    status_filter: Optional[str] = None,
+    limit: int = 50
+):
+    """List all strategy generation jobs (proxied to strategy service)"""
+    try:
+        import httpx
+        
+        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8003")
+        
+        params = {"limit": limit}
+        if status_filter:
+            params["status_filter"] = status_filter
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{strategy_service_url}/api/v1/strategies/jobs",
+                params=params
+            )
+            response.raise_for_status()
+            return response.json()
+            
+    except httpx.HTTPError as e:
+        logger.error("Strategy service request failed", error=str(e))
+        raise HTTPException(status_code=503, detail="Strategy service unavailable")
+    except Exception as e:
+        logger.error("Error listing generation jobs", error=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.delete("/api/strategies/jobs/{job_id}")
+async def cancel_generation_job(job_id: str):
+    """Cancel a running strategy generation job (proxied to strategy service)"""
+    try:
+        import httpx
+        
+        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8003")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.delete(
+                f"{strategy_service_url}/api/v1/strategies/jobs/{job_id}"
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            # Broadcast cancellation event
+            await broadcast_update("generation_cancelled", {
+                "job_id": job_id
+            })
+            
+            return result
+            
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Generation job not found")
+        logger.error("Strategy service request failed", error=str(e))
+        raise HTTPException(status_code=503, detail="Strategy service unavailable")
+    except Exception as e:
+        logger.error("Error cancelling generation job", error=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 # Configuration endpoints
 @app.post("/api/strategies/{strategy_id}/toggle")
 async def toggle_strategy(strategy_id: int):
@@ -399,12 +577,32 @@ async def broadcast_update(update_type: str, data: dict):
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
     await manager.broadcast(json.dumps(message))
+    # Also broadcast to Socket.IO clients
+    await sio.emit(update_type, message)
+
+# Socket.IO event handlers
+@sio.event
+async def connect(sid, environ):
+    """Handle Socket.IO client connection"""
+    logger.info("Socket.IO client connected", sid=sid)
+
+@sio.event
+async def disconnect(sid):
+    """Handle Socket.IO client disconnection"""
+    logger.info("Socket.IO client disconnected", sid=sid)
+
+@sio.event
+async def subscribe(sid, data):
+    """Handle subscription to specific data streams"""
+    logger.info("Client subscribed", sid=sid, data=data)
+    # You can implement room-based subscriptions here
+    # await sio.enter_room(sid, data.get('room'))
 
 if __name__ == "__main__":
     import os
-    port = int(os.getenv("PORT", "8090"))  # Use 8090 as default since 8080 is in use
+    port = int(os.getenv("PORT", "8080"))  # Use configured port
     uvicorn.run(
-        "main:app",
+        "main:socket_app",
         host="0.0.0.0",
         port=port,
         log_level=settings.LOG_LEVEL.lower(),
