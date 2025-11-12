@@ -68,9 +68,9 @@ class PriceAlertCondition(AlertCondition):
     - Percentage change
     - Volatility spikes
     """
-    symbol: str
-    operator: ComparisonOperator
-    threshold: float
+    symbol: str = ""
+    operator: ComparisonOperator = ComparisonOperator.GREATER_THAN
+    threshold: float = 0.0
     
     # For percentage change alerts
     percentage_change: Optional[float] = None
@@ -155,10 +155,10 @@ class PerformanceAlertCondition(AlertCondition):
     - Drawdown exceeds limit
     - Winning/losing streak
     """
-    strategy_id: str
-    metric: str  # "win_rate", "pnl", "drawdown", "sharpe_ratio", "streak"
-    operator: ComparisonOperator
-    threshold: float
+    strategy_id: str = ""
+    metric: str = ""  # "win_rate", "pnl", "drawdown", "sharpe_ratio", "streak"
+    operator: ComparisonOperator = ComparisonOperator.GREATER_THAN
+    threshold: float = 0.0
     
     # For streak detection
     streak_type: Optional[str] = None  # "winning" or "losing"
@@ -236,9 +236,9 @@ class RiskAlertCondition(AlertCondition):
     - Stop loss hit
     - Risk limit breach
     """
-    risk_metric: str  # "drawdown", "position_size", "leverage", "margin", "exposure"
-    operator: ComparisonOperator
-    threshold: float
+    risk_metric: str = ""  # "drawdown", "position_size", "leverage", "margin", "exposure"
+    operator: ComparisonOperator = ComparisonOperator.GREATER_THAN
+    threshold: float = 0.0
     
     # Optional filters
     symbol: Optional[str] = None
@@ -305,10 +305,10 @@ class SystemHealthAlertCondition(AlertCondition):
     - High latency
     - Resource usage (CPU, memory)
     """
-    service_name: str
-    health_metric: str  # "uptime", "error_rate", "latency", "cpu", "memory"
-    operator: ComparisonOperator
-    threshold: float
+    service_name: str = ""
+    health_metric: str = ""  # "uptime", "error_rate", "latency", "cpu", "memory"
+    operator: ComparisonOperator = ComparisonOperator.GREATER_THAN
+    threshold: float = 0.0
     
     # Consecutive failures before alerting
     consecutive_failures: int = 3
@@ -375,8 +375,8 @@ class MilestoneAlertCondition(AlertCondition):
     - ROI milestone
     - New equity high
     """
-    milestone_type: str  # "total_profit", "win_rate", "trade_count", "roi", "equity_high"
-    threshold: float
+    milestone_type: str = ""  # "total_profit", "win_rate", "trade_count", "roi", "equity_high"
+    threshold: float = 0.0
     
     # Track if already triggered (one-time alerts)
     triggered_once: bool = False

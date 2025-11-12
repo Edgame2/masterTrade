@@ -61,12 +61,35 @@ class Database:
     # ------------------------------------------------------------------
     @staticmethod
     def _normalise_strategy_record(record: asyncpg.Record) -> Dict[str, Any]:
+        import json
         data = dict(record)
         data["id"] = str(data["id"])
-        data["parameters"] = _json(data.get("parameters"))
-        data["configuration"] = _json(data.get("configuration"))
-        data["metadata"] = _json(data.get("metadata"))
-        data["symbols"] = data.get("symbols") or []
+        
+        # Handle JSONB columns - asyncpg returns them as dicts, but dict(record) might serialize them
+        for key in ["parameters", "configuration", "metadata"]:
+            value = data.get(key)
+            if value is None:
+                data[key] = {}
+            elif isinstance(value, str):
+                # If it's a string, parse it
+                try:
+                    data[key] = json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    data[key] = {}
+            elif not isinstance(value, dict):
+                # If it's not a dict, make it an empty dict
+                data[key] = {}
+            # else: it's already a dict, keep it
+        
+        # Parse symbols - it comes as a JSON string from the aggregation
+        symbols = data.get("symbols")
+        if isinstance(symbols, str):
+            try:
+                data["symbols"] = json.loads(symbols)
+            except (json.JSONDecodeError, TypeError):
+                data["symbols"] = []
+        else:
+            data["symbols"] = symbols or []
         return data
 
     async def _fetch_strategies(self, where: str = "", *args: Any) -> List[Dict[str, Any]]:
@@ -78,7 +101,7 @@ class Database:
                     json_agg(
                         json_build_object(
                             'symbol', ss.symbol,
-                            'metadata', ss.metadata
+                            'weight', ss.weight
                         )
                     ) FILTER (WHERE ss.symbol IS NOT NULL),
                     '[]'::json
@@ -942,3 +965,258 @@ class Database:
         del query, limit
         logger.warning("Market data query placeholder invoked")
         return []
+    
+    # ==========================================
+    # Feature Computation Database Methods
+    # ==========================================
+    
+    async def get_indicator_results(
+        self, 
+        symbol: str, 
+        start_time: datetime, 
+        end_time: datetime, 
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """Retrieve technical indicator results for a symbol within a time range"""
+        try:
+            records = await self._postgres.fetch(
+                """
+                SELECT 
+                    symbol, 
+                    indicator_name, 
+                    indicator_value, 
+                    timeframe, 
+                    timestamp, 
+                    metadata
+                FROM indicator_results
+                WHERE symbol = $1 
+                  AND timestamp >= $2 
+                  AND timestamp <= $3
+                ORDER BY timestamp DESC
+                LIMIT $4
+                """,
+                symbol, start_time, end_time, limit
+            )
+            return [dict(r) for r in records]
+        except Exception as e:
+            logger.error(
+                "Failed to retrieve indicator results",
+                symbol=symbol,
+                error=str(e)
+            )
+            return []
+    
+    async def get_onchain_metrics(
+        self, 
+        symbol: str, 
+        start_time: datetime, 
+        end_time: datetime, 
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """Retrieve on-chain metrics for a symbol within a time range"""
+        try:
+            records = await self._postgres.fetch(
+                """
+                SELECT 
+                    symbol,
+                    metric_name,
+                    metric_value,
+                    timestamp,
+                    source,
+                    metadata
+                FROM onchain_metrics
+                WHERE symbol = $1 
+                  AND timestamp >= $2 
+                  AND timestamp <= $3
+                ORDER BY timestamp DESC
+                LIMIT $4
+                """,
+                symbol, start_time, end_time, limit
+            )
+            return [dict(r) for r in records]
+        except Exception as e:
+            logger.error(
+                "Failed to retrieve onchain metrics",
+                symbol=symbol,
+                error=str(e)
+            )
+            return []
+    
+    async def get_social_sentiment(
+        self, 
+        symbol: str, 
+        start_time: datetime, 
+        end_time: datetime, 
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """Retrieve social sentiment data for a symbol within a time range"""
+        try:
+            records = await self._postgres.fetch(
+                """
+                SELECT 
+                    symbol,
+                    platform,
+                    sentiment_score,
+                    volume,
+                    timestamp,
+                    metadata
+                FROM social_sentiment
+                WHERE symbol = $1 
+                  AND timestamp >= $2 
+                  AND timestamp <= $3
+                ORDER BY timestamp DESC
+                LIMIT $4
+                """,
+                symbol, start_time, end_time, limit
+            )
+            return [dict(r) for r in records]
+        except Exception as e:
+            logger.error(
+                "Failed to retrieve social sentiment",
+                symbol=symbol,
+                error=str(e)
+            )
+            return []
+    
+    async def get_all_current_stock_indices(self) -> List[Dict[str, Any]]:
+        """Retrieve current values for all tracked stock indices"""
+        try:
+            # Query market_data table for stock index entries
+            records = await self._postgres.fetch(
+                """
+                SELECT 
+                    id,
+                    partition_key,
+                    data,
+                    created_at,
+                    updated_at
+                FROM market_data
+                WHERE data->>'asset_type' = 'stock_index_current'
+                ORDER BY created_at DESC
+                """
+            )
+            
+            # Extract and normalize data
+            indices = []
+            seen_symbols = set()
+            
+            for record in records:
+                data = record['data']
+                symbol = data.get('symbol')
+                
+                # Only keep the most recent entry per symbol
+                if symbol and symbol not in seen_symbols:
+                    seen_symbols.add(symbol)
+                    indices.append({
+                        'symbol': symbol,
+                        'normalized_symbol': data.get('normalized_symbol'),
+                        'current_price': data.get('current_price'),
+                        'previous_close': data.get('previous_close'),
+                        'change': data.get('change'),
+                        'change_percent': data.get('change_percent'),
+                        'volume': data.get('volume'),
+                        'day_high': data.get('day_high'),
+                        'day_low': data.get('day_low'),
+                        'timestamp': data.get('timestamp'),
+                        'source': data.get('source'),
+                        'metadata': data.get('metadata', {})
+                    })
+            
+            logger.debug(
+                "Retrieved current stock indices",
+                count=len(indices)
+            )
+            return indices
+            
+        except Exception as e:
+            logger.error(
+                "Failed to retrieve current stock indices",
+                error=str(e)
+            )
+            return []
+    
+    async def get_stock_market_summary(self) -> Dict[str, Any]:
+        """Retrieve stock market summary including overall sentiment"""
+        try:
+            # Get latest stock indices
+            indices = await self.get_all_current_stock_indices()
+            
+            if not indices:
+                return {'market_sentiment': 'neutral'}
+            
+            # Calculate market sentiment based on index changes
+            total_change = 0
+            count = 0
+            
+            for index in indices:
+                change_percent = index.get('change_percent')
+                if change_percent is not None:
+                    total_change += change_percent
+                    count += 1
+            
+            avg_change = total_change / count if count > 0 else 0
+            
+            # Determine sentiment
+            if avg_change > 1.0:
+                sentiment = 'bullish'
+            elif avg_change < -1.0:
+                sentiment = 'bearish'
+            else:
+                sentiment = 'neutral'
+            
+            return {
+                'market_sentiment': sentiment,
+                'average_change_percent': avg_change,
+                'indices_count': count,
+                'indices': indices
+            }
+            
+        except Exception as e:
+            logger.error(
+                "Failed to retrieve stock market summary",
+                error=str(e)
+            )
+            return {'market_sentiment': 'neutral'}
+    
+    async def get_sentiment_data(
+        self, 
+        hours: int = 24, 
+        limit: int = 1
+    ) -> List[Dict[str, Any]]:
+        """Retrieve recent sentiment data including Fear & Greed Index"""
+        try:
+            cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+            
+            records = await self._postgres.fetch(
+                """
+                SELECT 
+                    source,
+                    sentiment_type,
+                    sentiment_value,
+                    timestamp,
+                    metadata
+                FROM sentiment_data
+                WHERE timestamp >= $1
+                ORDER BY timestamp DESC
+                LIMIT $2
+                """,
+                cutoff_time, limit
+            )
+            
+            results = []
+            for record in records:
+                result = dict(record)
+                # Check if Fear & Greed Index is in metadata
+                if record['metadata'] and 'fear_greed_index' in record['metadata']:
+                    result['fear_greed_index'] = record['metadata']['fear_greed_index']
+                results.append(result)
+            
+            return results
+            
+        except Exception as e:
+            logger.error(
+                "Failed to retrieve sentiment data",
+                hours=hours,
+                error=str(e)
+            )
+            return []

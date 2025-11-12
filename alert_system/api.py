@@ -15,7 +15,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
 
-from .alert_manager import (
+from alert_manager import (
     AlertManager,
     Alert,
     AlertType,
@@ -24,7 +24,7 @@ from .alert_manager import (
     AlertChannel,
 )
 
-from .alert_conditions import (
+from alert_conditions import (
     PriceAlertCondition,
     PerformanceAlertCondition,
     RiskAlertCondition,
@@ -33,7 +33,7 @@ from .alert_conditions import (
     ComparisonOperator,
 )
 
-from .alert_templates import TemplateType, TemplateRenderer
+from alert_templates import TemplateType, TemplateRenderer
 
 # Initialize global instances (would use dependency injection in production)
 alert_manager = AlertManager()

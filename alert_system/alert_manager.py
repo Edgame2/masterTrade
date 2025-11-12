@@ -189,11 +189,11 @@ class AlertManager:
         self.alerts: Dict[str, Alert] = {}
         
         # Alert conditions (monitored continuously)
-        from .alert_conditions import AlertCondition
+        from alert_conditions import AlertCondition
         self.conditions: Dict[str, AlertCondition] = {}
         
         # Notification channels
-        from .notification_channels import NotificationChannel
+        from notification_channels import NotificationChannel
         self.channels: Dict[AlertChannel, NotificationChannel] = {}
         
         # Suppression rules (symbol -> until_time)

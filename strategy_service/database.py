@@ -61,12 +61,35 @@ class Database:
     # ------------------------------------------------------------------
     @staticmethod
     def _normalise_strategy_record(record: asyncpg.Record) -> Dict[str, Any]:
+        import json
         data = dict(record)
         data["id"] = str(data["id"])
-        data["parameters"] = _json(data.get("parameters"))
-        data["configuration"] = _json(data.get("configuration"))
-        data["metadata"] = _json(data.get("metadata"))
-        data["symbols"] = data.get("symbols") or []
+        
+        # Handle JSONB columns - asyncpg returns them as dicts, but dict(record) might serialize them
+        for key in ["parameters", "configuration", "metadata"]:
+            value = data.get(key)
+            if value is None:
+                data[key] = {}
+            elif isinstance(value, str):
+                # If it's a string, parse it
+                try:
+                    data[key] = json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    data[key] = {}
+            elif not isinstance(value, dict):
+                # If it's not a dict, make it an empty dict
+                data[key] = {}
+            # else: it's already a dict, keep it
+        
+        # Parse symbols - it comes as a JSON string from the aggregation
+        symbols = data.get("symbols")
+        if isinstance(symbols, str):
+            try:
+                data["symbols"] = json.loads(symbols)
+            except (json.JSONDecodeError, TypeError):
+                data["symbols"] = []
+        else:
+            data["symbols"] = symbols or []
         return data
 
     async def _fetch_strategies(self, where: str = "", *args: Any) -> List[Dict[str, Any]]:
@@ -78,7 +101,7 @@ class Database:
                     json_agg(
                         json_build_object(
                             'symbol', ss.symbol,
-                            'metadata', ss.metadata
+                            'weight', ss.weight
                         )
                     ) FILTER (WHERE ss.symbol IS NOT NULL),
                     '[]'::json

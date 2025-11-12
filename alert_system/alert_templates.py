@@ -73,7 +73,7 @@ class TemplateRenderer:
     
     def _load_default_templates(self):
         """Load default alert templates"""
-        from .alert_manager import AlertPriority, AlertType
+        from alert_manager import AlertPriority, AlertType
         
         # Price alerts
         self.templates[TemplateType.PRICE_BREAKOUT] = AlertTemplate(

@@ -2,18 +2,23 @@
 
 import { useEffect, useState } from 'react';
 import { signOut, useSession } from 'next-auth/react';
-import { FiLogOut, FiActivity, FiTrendingUp, FiDollarSign, FiAlertCircle } from 'react-icons/fi';
+import { FiLogOut, FiActivity, FiTrendingUp, FiDollarSign, FiAlertCircle, FiTarget } from 'react-icons/fi';
 import StrategyList from './StrategyList';
 import PortfolioOverview from './PortfolioOverview';
 import PerformanceChart from './PerformanceChart';
 import LivePositions from './LivePositions';
 import CryptoManager from './CryptoManager';
 import StrategyGenerator from './StrategyGenerator';
+import DataSourcesView from './DataSourcesView';
+import GoalProgressView from './GoalProgressView';
+import SystemHealthView from './SystemHealthView';
+import StrategyManagementView from './StrategyManagementView';
+import AlertsNotificationsView from './AlertsNotificationsView';
 import { useWebSocket } from '@/hooks/useWebSocket';
 
 export default function Dashboard() {
   const { data: session } = useSession();
-  const [activeTab, setActiveTab] = useState<'overview' | 'strategies' | 'generator' | 'positions' | 'performance' | 'crypto'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'strategies' | 'generator' | 'positions' | 'performance' | 'crypto' | 'datasources' | 'goals' | 'strategy-mgmt' | 'alerts'>('overview');
   const [stats, setStats] = useState({
     totalPnL: 0,
     totalValue: 0,
@@ -157,7 +162,7 @@ export default function Dashboard() {
         <div className="bg-white dark:bg-slate-800 rounded-lg shadow-md mb-6">
           <div className="border-b border-gray-200 dark:border-gray-700">
             <nav className="flex space-x-8 px-6">
-              {['overview', 'strategies', 'generator', 'positions', 'performance', 'crypto'].map((tab) => (
+              {['overview', 'strategies', 'generator', 'positions', 'performance', 'crypto', 'datasources', 'goals', 'strategy-mgmt', 'alerts'].map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab as any)}
@@ -167,7 +172,7 @@ export default function Dashboard() {
                       : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                   }`}
                 >
-                  {tab}
+                  {tab === 'datasources' ? 'Data Sources' : tab === 'goals' ? 'Goals' : tab === 'strategy-mgmt' ? 'Strategy Mgmt' : tab}
                 </button>
               ))}
             </nav>
@@ -178,6 +183,7 @@ export default function Dashboard() {
         <div className="animate-slideIn">
           {activeTab === 'overview' && (
             <div className="space-y-6">
+              <SystemHealthView />
               <PerformanceChart />
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <PortfolioOverview />
@@ -190,6 +196,10 @@ export default function Dashboard() {
           {activeTab === 'positions' && <LivePositions />}
           {activeTab === 'performance' && <PerformanceChart detailed />}
           {activeTab === 'crypto' && <CryptoManager />}
+          {activeTab === 'datasources' && <DataSourcesView />}
+          {activeTab === 'goals' && <GoalProgressView />}
+          {activeTab === 'strategy-mgmt' && <StrategyManagementView />}
+          {activeTab === 'alerts' && <AlertsNotificationsView />}
         </div>
       </main>
     </div>
