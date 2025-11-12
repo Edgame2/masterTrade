@@ -64,8 +64,93 @@ request_duration = Histogram('gateway_request_duration_seconds', 'Request durati
 # FastAPI app
 app = FastAPI(
     title="MasterTrade API Gateway",
-    description="Unified API for the MasterTrade crypto trading bot",
-    version="1.0.0"
+    description="""
+    ## Unified API Gateway for MasterTrade Crypto Trading Bot
+    
+    This API gateway provides centralized access to all MasterTrade trading services including:
+    
+    * **Portfolio Management**: Real-time portfolio tracking and balance monitoring
+    * **Strategy Management**: Deploy, monitor, and control trading strategies
+    * **Market Data**: Access real-time and historical market data
+    * **Order Management**: Submit and track trading orders
+    * **Risk Management**: Portfolio risk metrics and exposure tracking
+    * **Alerts & Notifications**: Configure and manage trading alerts
+    * **WebSocket Streams**: Real-time data feeds for prices, trades, and signals
+    
+    ### Authentication
+    
+    Most endpoints require authentication via API key or JWT token:
+    - API Key: Include `X-API-Key` header
+    - JWT Token: Include `Authorization: Bearer <token>` header
+    
+    ### Rate Limiting
+    
+    - Unauthenticated: 100 requests/minute
+    - Authenticated: 1000 requests/minute
+    
+    ### Support
+    
+    - Interactive Docs: [/docs](/docs)
+    - Alternative Docs: [/redoc](/redoc)
+    - OpenAPI Schema: [/openapi.json](/openapi.json)
+    """,
+    version="1.0.0",
+    terms_of_service="https://mastertrade.com/terms",
+    contact={
+        "name": "MasterTrade Support",
+        "email": "support@mastertrade.com",
+        "url": "https://mastertrade.com/support"
+    },
+    license_info={
+        "name": "Proprietary",
+        "url": "https://mastertrade.com/license"
+    },
+    openapi_tags=[
+        {
+            "name": "Health",
+            "description": "Health check and monitoring endpoints"
+        },
+        {
+            "name": "Dashboard",
+            "description": "Dashboard overview and summary data"
+        },
+        {
+            "name": "Portfolio",
+            "description": "Portfolio balance and position management"
+        },
+        {
+            "name": "Strategies",
+            "description": "Trading strategy management and deployment"
+        },
+        {
+            "name": "Orders",
+            "description": "Order submission and tracking"
+        },
+        {
+            "name": "Trades",
+            "description": "Trade history and execution details"
+        },
+        {
+            "name": "Signals",
+            "description": "Trading signals and indicators"
+        },
+        {
+            "name": "Market Data",
+            "description": "Real-time and historical market data"
+        },
+        {
+            "name": "Symbols",
+            "description": "Trading pair management and configuration"
+        },
+        {
+            "name": "Strategy Environments",
+            "description": "Strategy deployment environments (paper/live)"
+        },
+        {
+            "name": "Exchange Environments",
+            "description": "Exchange connection and health status"
+        }
+    ]
 )
 
 # Add Prometheus instrumentation
