@@ -13,10 +13,13 @@ from datetime import datetime, timezone, timedelta
 from enum import Enum
 import asyncio
 import os
+import sys
 import structlog
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, Counter, Histogram, Gauge
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from shared.price_prediction_client import PricePredictionClient
+from shared.prometheus_metrics import create_instrumentator
 
 from config import settings
 from database import RiskPostgresDatabase
@@ -111,6 +114,10 @@ app = FastAPI(
     description="Comprehensive risk management system for trading operations",
     version="1.0.0"
 )
+
+# Add Prometheus instrumentation
+instrumentator = create_instrumentator("risk_manager", "1.0.0")
+instrumentator.instrument(app).expose(app)
 
 # Include advanced risk management router
 from advanced_risk_api import router as advanced_risk_router

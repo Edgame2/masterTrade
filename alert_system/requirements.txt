@@ -6,3 +6,4 @@ asyncpg==0.30.0
 structlog==24.4.0
 aiohttp==3.11.10
 python-multipart==0.0.20
+prometheus-fastapi-instrumentator==6.1.0

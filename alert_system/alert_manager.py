@@ -181,18 +181,25 @@ class AlertManager:
     - Alert creation and storage
     - Condition monitoring
     - Throttling and suppression
-    - Multi-channel delivery
+    - Multi-channel delivery via NotificationService
     - Alert history and acknowledgment
     """
     
-    def __init__(self):
+    def __init__(self, notification_service=None):
         self.alerts: Dict[str, Alert] = {}
         
         # Alert conditions (monitored continuously)
         from alert_conditions import AlertCondition
         self.conditions: Dict[str, AlertCondition] = {}
         
-        # Notification channels
+        # Notification service (manages all channels)
+        if notification_service is None:
+            from notification_service import NotificationService
+            self.notification_service = NotificationService()
+        else:
+            self.notification_service = notification_service
+        
+        # Legacy channel support (for backwards compatibility)
         from notification_channels import NotificationChannel
         self.channels: Dict[AlertChannel, NotificationChannel] = {}
         
@@ -210,7 +217,7 @@ class AlertManager:
             "by_channel": defaultdict(int),
         }
         
-        logger.info("AlertManager initialized")
+        logger.info("AlertManager initialized with NotificationService")
     
     def register_channel(self, channel_type: AlertChannel, channel: 'NotificationChannel'):
         """Register a notification channel"""
@@ -321,7 +328,41 @@ class AlertManager:
     
     def _send_alert(self, alert: Alert) -> bool:
         """
-        Send alert via all configured channels.
+        Send alert via NotificationService.
+        
+        Args:
+            alert: Alert to send
+            
+        Returns:
+            bool: True if sent via at least one channel
+        """
+        try:
+            # Use NotificationService for delivery
+            delivery_report = self.notification_service.send_notification(alert)
+            
+            # Update statistics
+            if delivery_report.is_successful:
+                logger.info(
+                    f"Alert sent via NotificationService: {alert.alert_id} "
+                    f"({delivery_report.successful_channels}/{delivery_report.total_channels} channels)"
+                )
+                return True
+            else:
+                logger.error(
+                    f"Failed to send alert via any channel: {alert.alert_id}"
+                )
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error sending alert via NotificationService: {e}")
+            
+            # Fallback to legacy channel delivery if NotificationService fails
+            return self._send_alert_legacy(alert)
+    
+    def _send_alert_legacy(self, alert: Alert) -> bool:
+        """
+        Legacy method: Send alert via directly configured channels.
+        Used as fallback if NotificationService fails.
         
         Args:
             alert: Alert to send
@@ -440,10 +481,10 @@ class AlertManager:
         ]
     
     def get_statistics(self) -> dict:
-        """Get alert statistics"""
+        """Get alert statistics including NotificationService stats"""
         active_alerts = self.get_active_alerts()
         
-        return {
+        stats = {
             "total_alerts": self.stats["total_alerts"],
             "active_alerts": len(active_alerts),
             "triggered_today": self.stats["triggered_today"],
@@ -454,6 +495,33 @@ class AlertManager:
             "by_channel": dict(self.stats["by_channel"]),
             "suppressions": len(self.suppressions),
         }
+        
+        # Add NotificationService statistics
+        if hasattr(self, 'notification_service') and self.notification_service:
+            stats["notification_service"] = self.notification_service.get_statistics()
+        
+        return stats
+    
+    def get_channel_health(self) -> dict:
+        """Get notification channel health status"""
+        if hasattr(self, 'notification_service') and self.notification_service:
+            return self.notification_service.get_channel_health()
+        return {}
+    
+    def test_notification_channel(self, channel_name: str):
+        """
+        Test a notification channel.
+        
+        Args:
+            channel_name: Name of channel to test (email, slack, telegram, etc.)
+            
+        Returns:
+            NotificationResult: Test result
+        """
+        if hasattr(self, 'notification_service') and self.notification_service:
+            return self.notification_service.test_channel(channel_name)
+        else:
+            raise RuntimeError("NotificationService not initialized")
     
     def cleanup_old_alerts(self, days: int = 7):
         """

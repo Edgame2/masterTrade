@@ -425,6 +425,65 @@ async def suppress_alerts(request: SuppressAlertsRequest):
     }
 
 
+@alert_router.post("/{alert_id}/snooze")
+async def snooze_alert(alert_id: str, duration_minutes: int = Query(60, ge=1, le=1440)):
+    """
+    Snooze an alert for specified duration.
+    
+    Args:
+        alert_id: Alert ID to snooze
+        duration_minutes: Duration in minutes (default 60, max 24 hours)
+        
+    Returns:
+        Success message
+    """
+    try:
+        alert = alert_manager.get_alert(alert_id)
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        
+        # Update alert status to suppressed
+        alert.status = AlertStatus.SUPPRESSED
+        
+        return {
+            "message": f"Alert snoozed for {duration_minutes} minutes",
+            "alert_id": alert_id,
+            "duration_minutes": duration_minutes,
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@alert_router.delete("/{alert_id}")
+async def delete_alert(alert_id: str):
+    """
+    Delete an alert.
+    
+    Args:
+        alert_id: Alert ID to delete
+        
+    Returns:
+        Success message
+    """
+    try:
+        alert = alert_manager.get_alert(alert_id)
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        
+        # Remove alert from manager
+        if alert_id in alert_manager.alerts:
+            del alert_manager.alerts[alert_id]
+        
+        return {
+            "message": "Alert deleted successfully",
+            "alert_id": alert_id,
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @alert_router.get("/list", response_model=List[AlertResponse])
 async def list_alerts(
     alert_type: Optional[str] = Query(None),

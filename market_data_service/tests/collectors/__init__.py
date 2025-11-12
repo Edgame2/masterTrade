@@ -1,0 +1,3 @@
+"""
+Collector unit tests
+"""

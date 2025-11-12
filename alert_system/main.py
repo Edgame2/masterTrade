@@ -15,6 +15,7 @@ import json
 import logging
 import signal
 import sys
+import os
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
@@ -23,6 +24,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
 import structlog
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from shared.prometheus_metrics import create_instrumentator
 
 from config import settings
 from database import Database
@@ -54,6 +58,10 @@ app = FastAPI(
     description="Alert and notification management system for automated trading",
     version="1.0.0",
 )
+
+# Add Prometheus instrumentation
+instrumentator = create_instrumentator("alert_system", "1.0.0")
+instrumentator.instrument(app).expose(app)
 
 # CORS middleware
 app.add_middleware(

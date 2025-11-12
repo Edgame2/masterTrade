@@ -17,6 +17,7 @@ import os
 # Import Redis caching decorators
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from shared.cache_decorators import cached
+from shared.prometheus_metrics import create_instrumentator
 
 # Import the enhanced strategy activation API
 from strategy_activation_api import router as activation_router, set_activation_system
@@ -105,6 +106,10 @@ def create_strategy_api(strategy_service) -> FastAPI:
         description="Advanced AI/ML Strategy Management with Daily Review System",
         version="2.0.0"
     )
+    
+    # Add Prometheus instrumentation
+    instrumentator = create_instrumentator("strategy_service", "2.0.0")
+    instrumentator.instrument(app).expose(app)
     
     # Add CORS middleware
     app.add_middleware(

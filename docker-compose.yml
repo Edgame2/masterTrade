@@ -362,18 +362,51 @@ services:
   redis:
     image: redis:7-alpine
     container_name: mastertrade_redis
-    # Port mapping removed - use internal network only
+    ports:
+      - "6379:6379"  # Exposed for external access and testing
     volumes:
       - redis_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
     networks:
       - mastertrade_network
-    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    command: redis-server /usr/local/etc/redis/redis.conf
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
       retries: 3
     restart: unless-stopped
+
+  # PgBouncer - PostgreSQL Connection Pooler
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: mastertrade_pgbouncer
+    environment:
+      - DATABASES_HOST=postgres
+      - DATABASES_PORT=5432
+      - DATABASES_USER=${POSTGRES_USER:-mastertrade}
+      - DATABASES_PASSWORD=${POSTGRES_PASSWORD:-mastertrade}
+      - DATABASES_DBNAME=${POSTGRES_DB:-mastertrade}
+      - POOL_MODE=transaction
+      - MAX_CLIENT_CONN=100
+      - DEFAULT_POOL_SIZE=20
+      - MIN_POOL_SIZE=5
+      - RESERVE_POOL_SIZE=5
+      - MAX_DB_CONNECTIONS=50
+      - MAX_USER_CONNECTIONS=50
+    ports:
+      - "6432:5432"  # PgBouncer exposed on 6432
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mastertrade_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "psql", "-U", "mastertrade", "-h", "localhost", "-c", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:

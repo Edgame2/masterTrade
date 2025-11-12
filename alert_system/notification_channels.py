@@ -498,3 +498,194 @@ class WebhookNotificationChannel(NotificationChannel):
                 timestamp=datetime.utcnow(),
                 error=str(e),
             )
+
+
+class SlackNotificationChannel(NotificationChannel):
+    """
+    Slack notification via Webhooks or Bot API.
+    
+    Supports:
+    - Incoming Webhooks (simpler, channel-specific)
+    - Bot API (more features, requires bot token)
+    
+    Requires:
+    - Webhook URLs or Bot token
+    - Channel IDs (for Bot API)
+    """
+    
+    def __init__(
+        self,
+        webhook_urls: Optional[list[str]] = None,
+        bot_token: Optional[str] = None,
+        channel_ids: Optional[list[str]] = None,
+    ):
+        super().__init__("slack")
+        self.webhook_urls = webhook_urls or []
+        self.bot_token = bot_token
+        self.channel_ids = channel_ids or []
+        
+        if not webhook_urls and not (bot_token and channel_ids):
+            raise ValueError("Must provide either webhook_urls or (bot_token + channel_ids)")
+    
+    def send(self, alert: 'Alert') -> NotificationResult:
+        """Send Slack notification"""
+        try:
+            import requests
+            
+            # Build Slack blocks for rich formatting
+            blocks = self._build_slack_blocks(alert)
+            
+            # Send via webhooks
+            if self.webhook_urls:
+                for webhook_url in self.webhook_urls:
+                    response = requests.post(
+                        webhook_url,
+                        json={"blocks": blocks},
+                        timeout=10,
+                    )
+                    response.raise_for_status()
+            
+            # Send via Bot API
+            if self.bot_token and self.channel_ids:
+                headers = {
+                    "Authorization": f"Bearer {self.bot_token}",
+                    "Content-Type": "application/json",
+                }
+                
+                for channel_id in self.channel_ids:
+                    response = requests.post(
+                        "https://slack.com/api/chat.postMessage",
+                        headers=headers,
+                        json={
+                            "channel": channel_id,
+                            "blocks": blocks,
+                        },
+                        timeout=10,
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    if not result.get("ok"):
+                        raise Exception(f"Slack API error: {result.get('error')}")
+            
+            self.sent_count += 1
+            logger.info(f"Slack sent: {alert.alert_id}")
+            
+            return NotificationResult(
+                success=True,
+                channel="slack",
+                timestamp=datetime.utcnow(),
+                message_id=alert.alert_id,
+            )
+            
+        except Exception as e:
+            self.error_count += 1
+            logger.error(f"Failed to send Slack: {e}")
+            return NotificationResult(
+                success=False,
+                channel="slack",
+                timestamp=datetime.utcnow(),
+                error=str(e),
+            )
+    
+    def _build_slack_blocks(self, alert: 'Alert') -> list:
+        """Build Slack blocks for rich formatting"""
+        
+        # Priority colors and emoji
+        priority_map = {
+            1: {"color": "#FF0000", "emoji": "🔴"},  # CRITICAL
+            2: {"color": "#FF8800", "emoji": "🟠"},  # HIGH
+            3: {"color": "#FFFF00", "emoji": "🟡"},  # MEDIUM
+            4: {"color": "#00FF00", "emoji": "🟢"},  # LOW
+            5: {"color": "#0088FF", "emoji": "ℹ️"},   # INFO
+        }
+        
+        priority_info = priority_map.get(alert.priority.value, {"color": "#808080", "emoji": "⚪"})
+        
+        blocks = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"{priority_info['emoji']} {alert.title}",
+                    "emoji": True
+                }
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": alert.message
+                }
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Priority:* {alert.priority.name}"
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Type:* {alert.alert_type.name}"
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Time:* {alert.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                    }
+                ]
+            }
+        ]
+        
+        # Add fields if present
+        fields = []
+        if alert.symbol:
+            fields.append({
+                "type": "mrkdwn",
+                "text": f"*Symbol:*\n{alert.symbol}"
+            })
+        
+        if alert.strategy_id:
+            fields.append({
+                "type": "mrkdwn",
+                "text": f"*Strategy:*\n{alert.strategy_id}"
+            })
+        
+        if alert.position_id:
+            fields.append({
+                "type": "mrkdwn",
+                "text": f"*Position:*\n{alert.position_id}"
+            })
+        
+        if fields:
+            blocks.append({
+                "type": "section",
+                "fields": fields
+            })
+        
+        # Add data details
+        if alert.data:
+            data_text = ""
+            for key, value in list(alert.data.items())[:10]:  # Limit to 10 fields
+                data_text += f"*{key}:* {value}\n"
+            
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Details:*\n{data_text}"
+                }
+            })
+        
+        # Footer with alert ID
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"Alert ID: `{alert.alert_id}`"
+                }
+            ]
+        })
+        
+        return blocks
+

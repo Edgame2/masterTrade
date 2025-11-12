@@ -7,16 +7,20 @@ Provides unified API access to all trading bot services.
 import asyncio
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import structlog
 import socketio
-from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, Histogram, CollectorRegistry, generate_latest
 import uvicorn
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from shared.prometheus_metrics import create_instrumentator
 
 from config import settings
 
@@ -63,6 +67,10 @@ app = FastAPI(
     description="Unified API for the MasterTrade crypto trading bot",
     version="1.0.0"
 )
+
+# Add Prometheus instrumentation
+instrumentator = create_instrumentator("api_gateway", "1.0.0")
+instrumentator.instrument(app).expose(app)
 
 # CORS middleware
 app.add_middleware(
@@ -113,6 +121,12 @@ manager = ConnectionManager()
 async def startup_event():
     """Initialize database connection"""
     await database.connect()
+    # Initialize user management
+    await user_service.initialize()
+    # Add RBAC middleware to app state
+    app.state.rbac = rbac
+    # Add audit logger to app state
+    app.state.audit_logger = audit_logger
     logger.info("API Gateway started")
 
 @app.on_event("shutdown")
@@ -545,7 +559,7 @@ async def toggle_strategy(strategy_id: int):
         logger.error("Error toggling strategy", strategy_id=strategy_id, error=str(e))
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.post("/api/system/trading/toggle")
+@app.post("/api/system/toggle-trading")
 async def toggle_trading():
     """Toggle system trading enabled/disabled"""
     try:
@@ -553,6 +567,274 @@ async def toggle_trading():
         return {"trading_enabled": new_status}
     except Exception as e:
         logger.error("Error toggling trading", error=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+# ==================== User Management API ====================
+from user_management import (
+    UserManagementService,
+    CreateUserRequest,
+    UpdateUserRequest,
+    UserRole,
+    UserStatus
+)
+from rbac_middleware import (
+    RBACMiddleware,
+    Permission,
+    require_permissions,
+    require_role
+)
+from audit_logger import (
+    AuditLogger,
+    AuditAction,
+    ResourceType
+)
+
+# Initialize user management service
+user_service = UserManagementService(database)
+
+# Initialize RBAC middleware
+rbac = RBACMiddleware(user_service)
+
+# Initialize audit logger
+audit_logger = AuditLogger(user_service)
+
+@app.post("/api/v1/users", status_code=201)
+@require_permissions(Permission.USER_CREATE)
+async def create_user(request: Request, create_request: CreateUserRequest):
+    """Create a new user"""
+    try:
+        # Get user info from request state (set by RBAC decorator)
+        creator_email = request.state.user.get("email", "system")
+        user = await user_service.create_user(create_request, created_by=creator_email)
+        return user.dict()
+    except Exception as e:
+        logger.error("Error creating user", error=str(e))
+        if "unique constraint" in str(e).lower():
+            raise HTTPException(status_code=400, detail="User with this email already exists")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/v1/users")
+@require_permissions(Permission.USER_LIST)
+async def list_users(
+    request: Request,
+    role: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0
+):
+    """List users with optional filters"""
+    try:
+        role_enum = UserRole(role) if role else None
+        status_enum = UserStatus(status) if status else None
+        
+        users = await user_service.list_users(
+            role=role_enum,
+            status=status_enum,
+            limit=limit,
+            offset=offset
+        )
+        return {"users": [u.dict() for u in users], "count": len(users)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid role or status: {str(e)}")
+    except Exception as e:
+        logger.error("Error listing users", error=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/v1/users/{user_id}")
+@require_permissions(Permission.USER_READ)
+async def get_user(request: Request, user_id: str):
+    """Get user by ID"""
+    try:
+        user = await user_service.get_user(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return user.dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error getting user", error=str(e), user_id=user_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.put("/api/v1/users/{user_id}")
+@require_permissions(Permission.USER_UPDATE)
+async def update_user(request: Request, user_id: str, update_request: UpdateUserRequest):
+    """Update user"""
+    try:
+        updater_email = request.state.user.get("email", "system")
+        user = await user_service.update_user(user_id, update_request, updated_by=updater_email)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return user.dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error updating user", error=str(e), user_id=user_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.delete("/api/v1/users/{user_id}")
+@require_permissions(Permission.USER_DELETE)
+async def delete_user(request: Request, user_id: str):
+    """Delete (soft delete) user"""
+    try:
+        deleter_email = request.state.user.get("email", "system")
+        success = await user_service.delete_user(user_id, deleted_by=deleter_email)
+        if not success:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {"success": True, "message": "User deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error deleting user", error=str(e), user_id=user_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.post("/api/v1/users/{user_id}/reset-password")
+@require_role(UserRole.ADMIN)  # Only admins can reset passwords
+async def reset_password(request: Request, user_id: str, new_password: str):
+    """Reset user password"""
+    try:
+        user = await user_service.get_user(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Ensure connection
+        if not database._connected:
+            await database.connect()
+        
+        # Update password
+        password_hash = UserManagementService.hash_password(new_password)
+        await database._postgres.execute("""
+            UPDATE users SET password_hash = $1, updated_at = NOW()
+            WHERE id = $2
+        """, password_hash, int(user_id))
+        
+        # Log audit
+        admin_email = request.state.user.get("email", "system")
+        await user_service.log_audit(
+            user_id=request.state.user.get("user_id", "system"),
+            user_email=admin_email,
+            action="reset_password",
+            resource_type="user",
+            resource_id=user_id
+        )
+        
+        return {"success": True, "message": "Password reset successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error resetting password", error=str(e), user_id=user_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/v1/users/{user_id}/activities")
+@require_permissions(Permission.USER_READ)
+async def get_user_activities(request: Request, user_id: str, limit: int = 50):
+    """Get user activities"""
+    try:
+        activities = await user_service.get_user_activities(user_id, limit)
+        return {"activities": [a.dict() for a in activities], "count": len(activities)}
+    except Exception as e:
+        logger.error("Error getting user activities", error=str(e), user_id=user_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/v1/audit-logs")
+@require_permissions(Permission.AUDIT_READ)
+async def get_audit_logs(
+    request: Request,
+    user_id: Optional[str] = None,
+    resource_type: Optional[str] = None,
+    limit: int = 100
+):
+    """Get audit logs with optional filters"""
+    try:
+        logs = await user_service.get_audit_logs(
+            user_id=user_id,
+            resource_type=resource_type,
+            limit=limit
+        )
+        return {"logs": [l.dict() for l in logs], "count": len(logs)}
+    except Exception as e:
+        logger.error("Error getting audit logs", error=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/v1/audit/recent-actions")
+@require_permissions(Permission.AUDIT_READ)
+async def get_recent_audit_actions(
+    request: Request,
+    user_id: Optional[str] = None,
+    resource_type: Optional[str] = None,
+    action: Optional[str] = None,
+    limit: int = 50
+):
+    """Get recent audit actions with filters"""
+    try:
+        resource_type_enum = ResourceType(resource_type) if resource_type else None
+        action_enum = AuditAction(action) if action else None
+        
+        actions = await audit_logger.get_recent_actions(
+            user_id=user_id,
+            resource_type=resource_type_enum,
+            action=action_enum,
+            limit=limit
+        )
+        return {"actions": actions, "count": len(actions)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid resource_type or action: {str(e)}")
+    except Exception as e:
+        logger.error("Error getting recent audit actions", error=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/v1/audit/user-activity-summary/{user_id}")
+@require_permissions(Permission.AUDIT_READ)
+async def get_user_activity_summary_endpoint(
+    request: Request,
+    user_id: str,
+    hours: int = 24
+):
+    """Get user activity summary for specified period"""
+    try:
+        summary = await audit_logger.get_user_activity_summary(user_id, hours)
+        return summary
+    except Exception as e:
+        logger.error("Error getting user activity summary", error=str(e), user_id=user_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/v1/audit/statistics")
+@require_role(UserRole.ADMIN)
+async def get_audit_statistics(request: Request, days: int = 7):
+    """Get audit log statistics for the specified period"""
+    try:
+        # Get all audit logs for the period
+        logs = await user_service.get_audit_logs(limit=10000)
+        
+        # Calculate statistics
+        total_actions = len(logs)
+        actions_by_type = {}
+        actions_by_user = {}
+        actions_by_resource = {}
+        
+        for log in logs:
+            # Count by action type
+            action = log.action
+            actions_by_type[action] = actions_by_type.get(action, 0) + 1
+            
+            # Count by user
+            user = log.user_email
+            actions_by_user[user] = actions_by_user.get(user, 0) + 1
+            
+            # Count by resource type
+            resource = log.resource_type
+            actions_by_resource[resource] = actions_by_resource.get(resource, 0) + 1
+        
+        return {
+            "period_days": days,
+            "total_actions": total_actions,
+            "actions_by_type": actions_by_type,
+            "actions_by_user": actions_by_user,
+            "actions_by_resource": actions_by_resource,
+            "top_users": sorted(actions_by_user.items(), key=lambda x: x[1], reverse=True)[:10],
+            "top_actions": sorted(actions_by_type.items(), key=lambda x: x[1], reverse=True)[:10]
+        }
+    except Exception as e:
+        logger.error("Error getting audit statistics", error=str(e))
         raise HTTPException(status_code=500, detail="Internal server error")
 
 # WebSocket endpoint for real-time updates

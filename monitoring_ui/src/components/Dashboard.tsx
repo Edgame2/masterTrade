@@ -15,11 +15,12 @@ import GoalProgressView from './GoalProgressView';
 import SystemHealthView from './SystemHealthView';
 import StrategyManagementView from './StrategyManagementView';
 import AlertsNotificationsView from './AlertsNotificationsView';
+import UserManagementView from './UserManagementView';
 import { useWebSocket } from '@/hooks/useWebSocket';
 
 export default function Dashboard() {
   const { data: session } = useSession();
-  const [activeTab, setActiveTab] = useState<'overview' | 'strategies' | 'generator' | 'positions' | 'performance' | 'crypto' | 'datasources' | 'goals' | 'strategy-mgmt' | 'alerts'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'strategies' | 'generator' | 'positions' | 'performance' | 'crypto' | 'datasources' | 'goals' | 'strategy-mgmt' | 'alerts' | 'users'>('overview');
   const [stats, setStats] = useState({
     totalPnL: 0,
     totalValue: 0,
@@ -185,6 +186,7 @@ export default function Dashboard() {
             {activeTab === 'goals' && <GoalProgressView />}
             {activeTab === 'strategy-mgmt' && <StrategyManagementView />}
             {activeTab === 'alerts' && <AlertsNotificationsView />}
+            {activeTab === 'users' && <UserManagementView />}
           </div>
         </main>
       </div>

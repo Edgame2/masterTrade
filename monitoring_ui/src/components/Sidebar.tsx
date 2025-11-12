@@ -11,6 +11,7 @@ import {
   FiTarget,
   FiSettings,
   FiBell,
+  FiUsers,
   FiChevronLeft,
   FiChevronRight
 } from 'react-icons/fi';
@@ -42,6 +43,7 @@ export default function Sidebar({ activeTab, onTabChange }: SidebarProps) {
     { id: 'datasources', label: 'Data Sources', icon: FiDatabase },
     { id: 'goals', label: 'Financial Goals', icon: FiTarget },
     { id: 'alerts', label: 'Alerts & Notifications', icon: FiBell },
+    { id: 'users', label: 'User Management', icon: FiUsers },
   ];
 
   return (
