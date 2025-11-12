@@ -56,6 +56,14 @@ class RiskManagementService:
             self.database = RiskPostgresDatabase()
             await self.database.initialize()
 
+            # IMPORTANT: Also initialize the module-level database and components from main.py
+            # These are used by goal_tracking_service and other module-level objects
+            import main
+            await main.database.initialize()
+            await main.price_prediction_client.initialize()
+            await main.goal_tracking_service.start()
+            logger.info("Main module components initialized")
+
             # Initialize price prediction client
             self.price_prediction_client = PricePredictionClient(
                 base_url=settings.STRATEGY_SERVICE_URL,

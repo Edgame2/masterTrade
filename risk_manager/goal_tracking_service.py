@@ -13,6 +13,7 @@ Features:
 """
 
 import asyncio
+import aiohttp
 from datetime import datetime, date, time, timezone, timedelta
 from decimal import Decimal
 from typing import Dict, Any, Optional
@@ -35,16 +36,18 @@ class GoalTrackingService:
     Runs daily at end-of-day to snapshot progress
     """
     
-    def __init__(self, database: RiskPostgresDatabase):
+    def __init__(self, database: RiskPostgresDatabase, alert_system_url: str = "http://alert_system:8007"):
         """
         Initialize goal tracking service
         
         Args:
             database: Database instance for storing goal progress
+            alert_system_url: URL of the alert system service
         """
         self.database = database
         self.running = False
         self.scheduler_task: Optional[asyncio.Task] = None
+        self.alert_system_url = alert_system_url
         
         # Goal targets (configurable)
         self.monthly_return_target = 5.0  # 5% monthly return
@@ -292,7 +295,8 @@ class GoalTrackingService:
                        progress=f"{(actual_income / self.monthly_income_target * 100):.1f}%")
         
         except Exception as e:
-            logger.error("Error tracking monthly income goal", error=str(e))
+            import traceback
+            logger.error("Error tracking monthly income goal", error=str(e), traceback=traceback.format_exc())
     
     async def _track_portfolio_value_goal(self, current_portfolio_value: float):
         """
@@ -333,7 +337,8 @@ class GoalTrackingService:
                        progress=f"{(current_portfolio_value / self.portfolio_value_target * 100):.1f}%")
         
         except Exception as e:
-            logger.error("Error tracking portfolio value goal", error=str(e))
+            import traceback
+            logger.error("Error tracking portfolio value goal", error=str(e), traceback=traceback.format_exc())
     
     async def _get_current_portfolio_value(self) -> float:
         """
@@ -343,22 +348,7 @@ class GoalTrackingService:
             Current portfolio value in USD
         """
         try:
-            # Query all open positions
-            query = """
-                SELECT 
-                    COALESCE(SUM(quantity * entry_price), 0) as total_value
-                FROM positions
-                WHERE status = 'open'
-            """
-            
-            result = await self.database._postgres.fetchrow(query)
-            portfolio_value = float(result['total_value']) if result else 0.0
-            
-            # Add cash balance (if tracked)
-            # For now, assume portfolio value is just position values
-            
-            return portfolio_value
-        
+            return await self.database.get_portfolio_value()
         except Exception as e:
             logger.error("Error getting portfolio value", error=str(e))
             return 0.0
@@ -372,10 +362,10 @@ class GoalTrackingService:
         message: str
     ):
         """
-        Send alert for goal status change
+        Send alert for goal status change via alert_system
         
         Args:
-            goal_type: Type of goal
+            goal_type: Type of goal (monthly_return, monthly_income, portfolio_value)
             status: Goal status (achieved, at_risk, behind)
             actual_value: Actual value
             target_value: Target value
@@ -390,16 +380,65 @@ class GoalTrackingService:
                        target_value=target_value,
                        message=message)
             
-            # In production, this would:
-            # - Send email notification
-            # - Send Telegram/Slack message
-            # - Create system notification
-            # - Store in alerts table
+            # Determine priority based on status
+            priority_map = {
+                'achieved': 'low',      # Good news
+                'on_track': 'low',      # Normal
+                'at_risk': 'medium',    # Warning
+                'behind': 'high'        # Urgent attention needed
+            }
+            priority = priority_map.get(status, 'medium')
             
-            # For now, just log
+            # Determine alert title
+            goal_titles = {
+                'monthly_return': 'Monthly Return Goal',
+                'monthly_income': 'Monthly Income Goal',
+                'portfolio_value': 'Portfolio Value Goal'
+            }
+            title = f"{goal_titles.get(goal_type, 'Goal')} - {status.replace('_', ' ').title()}"
+            
+            # Create alert via alert_system API
+            alert_data = {
+                'alert_type': 'milestone',
+                'priority': priority,
+                'title': title,
+                'message': message,
+                'channels': ['email', 'telegram'],
+                'data': {
+                    'goal_type': goal_type,
+                    'status': status,
+                    'actual_value': actual_value,
+                    'target_value': target_value,
+                    'progress_percent': (actual_value / target_value * 100) if target_value > 0 else 0
+                }
+            }
+            
+            # Send to alert system
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{self.alert_system_url}/api/alerts/create",
+                        json=alert_data,
+                        timeout=aiohttp.ClientTimeout(total=5)
+                    ) as response:
+                        if response.status == 200:
+                            alert_result = await response.json()
+                            logger.info("Goal alert created in alert_system",
+                                      alert_id=alert_result.get('alert_id'),
+                                      goal_type=goal_type,
+                                      status=status)
+                        else:
+                            error_text = await response.text()
+                            logger.warning("Failed to create goal alert in alert_system",
+                                         status=response.status,
+                                         error=error_text)
+            except asyncio.TimeoutError:
+                logger.warning("Timeout creating goal alert in alert_system", goal_type=goal_type)
+            except aiohttp.ClientError as e:
+                logger.warning("Error connecting to alert_system", error=str(e), goal_type=goal_type)
             
         except Exception as e:
-            logger.error("Error sending goal alert", error=str(e))
+            logger.error("Error sending goal alert", error=str(e), goal_type=goal_type)
     
     async def record_realized_profit(self, profit: float):
         """

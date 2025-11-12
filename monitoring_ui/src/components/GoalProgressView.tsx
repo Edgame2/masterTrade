@@ -34,6 +34,26 @@ interface GoalsStatusResponse {
 }
 
 /**
+ * Alert interface for goal-related alerts
+ */
+interface GoalAlert {
+  alert_id: string;
+  alert_type: string;
+  priority: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  title: string;
+  message: string;
+  status: 'pending' | 'acknowledged' | 'resolved';
+  created_at: string;
+  data: {
+    goal_type?: string;
+    status?: string;
+    actual_value?: number;
+    target_value?: number;
+    progress_percent?: number;
+  } | null;
+}
+
+/**
  * Goal Progress View Component
  * 
  * Displays financial goal tracking:
@@ -50,11 +70,13 @@ interface GoalsStatusResponse {
  */
 export default function GoalProgressView() {
   const [goals, setGoals] = useState<FinancialGoal[]>([]);
+  const [alerts, setAlerts] = useState<GoalAlert[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   const RISK_MANAGER_API = process.env.NEXT_PUBLIC_RISK_MANAGER_API_URL || 'http://localhost:8003';
+  const ALERT_API = process.env.NEXT_PUBLIC_ALERT_API_URL || 'http://localhost:8007';
 
   useEffect(() => {
     fetchGoalsStatus();
@@ -64,24 +86,43 @@ export default function GoalProgressView() {
   }, []);
 
   /**
-   * Fetch goals status from risk_manager API
+   * Fetch goals status from risk_manager API and related alerts from alert_system
    */
   const fetchGoalsStatus = async () => {
     try {
       setError(null);
-      const response = await fetch(`${RISK_MANAGER_API}/goals/status`);
       
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      // Fetch goals
+      const goalsResponse = await fetch(`${RISK_MANAGER_API}/goals/status`);
+      
+      if (!goalsResponse.ok) {
+        throw new Error(`HTTP ${goalsResponse.status}: ${goalsResponse.statusText}`);
       }
 
-      const data: GoalsStatusResponse = await response.json();
+      const goalsData: GoalsStatusResponse = await goalsResponse.json();
       
-      if (!data.success) {
+      if (!goalsData.success) {
         throw new Error('API returned success: false');
       }
 
-      setGoals(data.goals);
+      setGoals(goalsData.goals);
+
+      // Fetch goal-related alerts (milestone type)
+      try {
+        const alertsResponse = await fetch(`${ALERT_API}/api/alerts/list?limit=50`);
+        if (alertsResponse.ok) {
+          const alertsData: GoalAlert[] = await alertsResponse.json();
+          // Filter for milestone alerts (goal-related) that are pending
+          const goalAlerts = alertsData.filter(
+            alert => alert.alert_type === 'milestone' && alert.status === 'pending'
+          );
+          setAlerts(goalAlerts);
+        }
+      } catch (alertError) {
+        console.warn('Failed to fetch alerts:', alertError);
+        // Don't fail the whole component if alerts fail
+      }
+
       setLastUpdate(new Date());
       setLoading(false);
     } catch (err) {
@@ -187,6 +228,42 @@ export default function GoalProgressView() {
     return requiredDaily;
   };
 
+  /**
+   * Get alerts for a specific goal
+   */
+  const getGoalAlerts = (goalType: string): GoalAlert[] => {
+    return alerts.filter(alert => {
+      // Check if alert data contains matching goal_type
+      if (alert.data && alert.data.goal_type === goalType) {
+        return true;
+      }
+      // Also check if title contains the goal type
+      const titleLower = alert.title.toLowerCase();
+      if (goalType === 'monthly_return' && titleLower.includes('monthly return')) return true;
+      if (goalType === 'monthly_income' && titleLower.includes('monthly income')) return true;
+      if (goalType === 'portfolio_value' && titleLower.includes('portfolio value')) return true;
+      return false;
+    });
+  };
+
+  /**
+   * Get alert priority color
+   */
+  const getAlertPriorityColor = (priority: string) => {
+    switch (priority) {
+      case 'CRITICAL':
+        return 'text-red-400 bg-red-500/20 border-red-500/30';
+      case 'HIGH':
+        return 'text-orange-400 bg-orange-500/20 border-orange-500/30';
+      case 'MEDIUM':
+        return 'text-yellow-400 bg-yellow-500/20 border-yellow-500/30';
+      case 'LOW':
+        return 'text-blue-400 bg-blue-500/20 border-blue-500/30';
+      default:
+        return 'text-gray-400 bg-gray-500/20 border-gray-500/30';
+    }
+  };
+
   // Loading state
   if (loading) {
     return (
@@ -255,6 +332,7 @@ export default function GoalProgressView() {
           const config = getGoalConfig(goal.goal_type);
           const Icon = config.icon;
           const requiredDaily = getRequiredDailyReturn(goal);
+          const goalAlerts = getGoalAlerts(goal.goal_type);
 
           return (
             <div
@@ -284,7 +362,42 @@ export default function GoalProgressView() {
                   {goal.status === 'achieved' && <FiCheckCircle className="inline w-3 h-3 mr-1" />}
                   {goal.status.replace('_', ' ').toUpperCase()}
                 </span>
+                {goalAlerts.length > 0 && (
+                  <span className="px-2 py-1 rounded-full text-xs font-medium bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">
+                    {goalAlerts.length} Alert{goalAlerts.length > 1 ? 's' : ''}
+                  </span>
+                )}
               </div>
+
+              {/* Active Alerts */}
+              {goalAlerts.length > 0 && (
+                <div className="mb-4 space-y-2">
+                  {goalAlerts.slice(0, 2).map((alert) => (
+                    <div
+                      key={alert.alert_id}
+                      className={`p-3 rounded-lg border text-xs ${getAlertPriorityColor(alert.priority)}`}
+                    >
+                      <div className="flex items-start gap-2">
+                        <FiAlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium">{alert.title}</div>
+                          <div className="text-xs opacity-80 mt-1 line-clamp-2">
+                            {alert.message}
+                          </div>
+                          <div className="text-xs opacity-60 mt-1">
+                            {new Date(alert.created_at).toLocaleString()}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {goalAlerts.length > 2 && (
+                    <div className="text-xs text-slate-400 text-center">
+                      +{goalAlerts.length - 2} more alert{goalAlerts.length - 2 > 1 ? 's' : ''}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Progress Bar */}
               <div className="mb-4">

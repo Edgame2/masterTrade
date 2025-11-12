@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { signOut, useSession } from 'next-auth/react';
-import { FiLogOut, FiActivity, FiTrendingUp, FiDollarSign, FiAlertCircle, FiTarget } from 'react-icons/fi';
+import { FiLogOut, FiActivity, FiTrendingUp, FiDollarSign, FiAlertCircle } from 'react-icons/fi';
+import Sidebar from './Sidebar';
 import StrategyList from './StrategyList';
 import PortfolioOverview from './PortfolioOverview';
 import PerformanceChart from './PerformanceChart';
@@ -75,133 +76,118 @@ export default function Dashboard() {
   };
 
   const StatCard = ({ title, value, icon: Icon, trend, color }: any) => (
-    <div className="bg-white dark:bg-slate-800 rounded-lg shadow-md p-6 card-hover">
+    <div className="bg-slate-800 rounded-lg border border-slate-700 p-5 hover:border-slate-600 transition-colors">
       <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm text-gray-600 dark:text-gray-400 mb-1">{title}</p>
+        <div className="flex-1">
+          <p className="text-sm text-slate-400 mb-1">{title}</p>
           <h3 className={`text-2xl font-bold ${color}`}>{value}</h3>
           {trend && (
-            <p className={`text-sm mt-1 ${trend > 0 ? 'text-success' : 'text-danger'}`}>
+            <p className={`text-sm mt-1 ${trend > 0 ? 'text-green-400' : 'text-red-400'}`}>
               {trend > 0 ? '↑' : '↓'} {Math.abs(trend)}%
             </p>
           )}
         </div>
-        <div className={`p-3 rounded-full ${color} bg-opacity-10`}>
-          <Icon className="w-6 h-6" />
+        <div className={`p-3 rounded-lg ${color} bg-opacity-10 bg-current`}>
+          <Icon className={`w-6 h-6 ${color}`} />
         </div>
       </div>
     </div>
   );
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800">
-      {/* Header */}
-      <header className="bg-white dark:bg-slate-800 shadow-md sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <FiTrendingUp className="w-8 h-8 text-primary-600" />
-              <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-                MasterTrade
-              </h1>
-              {connected && (
-                <span className="flex items-center text-sm text-success">
-                  <span className="w-2 h-2 bg-success rounded-full mr-2 pulse-dot"></span>
-                  Live
+    <div className="flex h-screen bg-slate-900 overflow-hidden">
+      {/* Sidebar Navigation */}
+      <Sidebar activeTab={activeTab} onTabChange={(tab) => setActiveTab(tab as any)} />
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Header */}
+        <header className="bg-slate-800 shadow-lg border-b border-slate-700">
+          <div className="px-6 py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <h1 className="text-xl font-bold text-white">
+                  {activeTab.charAt(0).toUpperCase() + activeTab.slice(1).replace('-', ' ')}
+                </h1>
+                {connected && (
+                  <span className="flex items-center text-sm text-green-400">
+                    <span className="w-2 h-2 bg-green-400 rounded-full mr-2 animate-pulse"></span>
+                    Live
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center space-x-4">
+                <span className="text-sm text-slate-400">
+                  {session?.user?.email}
                 </span>
-              )}
-            </div>
-            <div className="flex items-center space-x-4">
-              <span className="text-sm text-gray-600 dark:text-gray-400">
-                {session?.user?.email}
-              </span>
-              <button
-                onClick={() => signOut()}
-                className="flex items-center space-x-2 px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
-              >
-                <FiLogOut />
-                <span>Sign Out</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          <StatCard
-            title="Total P&L"
-            value={`$${stats.totalPnL.toFixed(2)}`}
-            icon={FiDollarSign}
-            trend={2.5}
-            color="text-success"
-          />
-          <StatCard
-            title="Portfolio Value"
-            value={`$${stats.totalValue.toFixed(2)}`}
-            icon={FiTrendingUp}
-            color="text-primary-600"
-          />
-          <StatCard
-            title="Active Strategies"
-            value={stats.activeStrategies}
-            icon={FiActivity}
-            color="text-blue-600"
-          />
-          <StatCard
-            title="Open Positions"
-            value={stats.openPositions}
-            icon={FiAlertCircle}
-            color="text-warning"
-          />
-        </div>
-
-        {/* Tabs */}
-        <div className="bg-white dark:bg-slate-800 rounded-lg shadow-md mb-6">
-          <div className="border-b border-gray-200 dark:border-gray-700">
-            <nav className="flex space-x-8 px-6">
-              {['overview', 'strategies', 'generator', 'positions', 'performance', 'crypto', 'datasources', 'goals', 'strategy-mgmt', 'alerts'].map((tab) => (
                 <button
-                  key={tab}
-                  onClick={() => setActiveTab(tab as any)}
-                  className={`py-4 px-1 border-b-2 font-medium text-sm capitalize ${
-                    activeTab === tab
-                      ? 'border-primary-500 text-primary-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }`}
+                  onClick={() => signOut()}
+                  className="flex items-center space-x-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
                 >
-                  {tab === 'datasources' ? 'Data Sources' : tab === 'goals' ? 'Goals' : tab === 'strategy-mgmt' ? 'Strategy Mgmt' : tab}
+                  <FiLogOut />
+                  <span>Sign Out</span>
                 </button>
-              ))}
-            </nav>
-          </div>
-        </div>
-
-        {/* Tab Content */}
-        <div className="animate-slideIn">
-          {activeTab === 'overview' && (
-            <div className="space-y-6">
-              <SystemHealthView />
-              <PerformanceChart />
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <PortfolioOverview />
-                <LivePositions limit={5} />
               </div>
             </div>
-          )}
-          {activeTab === 'strategies' && <StrategyList />}
-          {activeTab === 'generator' && <StrategyGenerator />}
-          {activeTab === 'positions' && <LivePositions />}
-          {activeTab === 'performance' && <PerformanceChart detailed />}
-          {activeTab === 'crypto' && <CryptoManager />}
-          {activeTab === 'datasources' && <DataSourcesView />}
-          {activeTab === 'goals' && <GoalProgressView />}
-          {activeTab === 'strategy-mgmt' && <StrategyManagementView />}
-          {activeTab === 'alerts' && <AlertsNotificationsView />}
+          </div>
+        </header>
+
+        {/* Stats Grid */}
+        <div className="bg-slate-900 px-6 py-6 border-b border-slate-800">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatCard
+              title="Total P&L"
+              value={`$${stats.totalPnL.toFixed(2)}`}
+              icon={FiDollarSign}
+              trend={2.5}
+              color="text-green-400"
+            />
+            <StatCard
+              title="Portfolio Value"
+              value={`$${stats.totalValue.toFixed(2)}`}
+              icon={FiTrendingUp}
+              color="text-blue-400"
+            />
+            <StatCard
+              title="Active Strategies"
+              value={stats.activeStrategies}
+              icon={FiActivity}
+              color="text-purple-400"
+            />
+            <StatCard
+              title="Open Positions"
+              value={stats.openPositions}
+              icon={FiAlertCircle}
+              color="text-yellow-400"
+            />
+          </div>
         </div>
-      </main>
+
+        {/* Main Content - Scrollable */}
+        <main className="flex-1 overflow-y-auto bg-slate-900 px-6 py-6">
+          <div className="max-w-7xl mx-auto">
+            {activeTab === 'overview' && (
+              <div className="space-y-6">
+                <SystemHealthView />
+                <PerformanceChart />
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <PortfolioOverview />
+                  <LivePositions limit={5} />
+                </div>
+              </div>
+            )}
+            {activeTab === 'strategies' && <StrategyList />}
+            {activeTab === 'generator' && <StrategyGenerator />}
+            {activeTab === 'positions' && <LivePositions />}
+            {activeTab === 'performance' && <PerformanceChart detailed />}
+            {activeTab === 'crypto' && <CryptoManager />}
+            {activeTab === 'datasources' && <DataSourcesView />}
+            {activeTab === 'goals' && <GoalProgressView />}
+            {activeTab === 'strategy-mgmt' && <StrategyManagementView />}
+            {activeTab === 'alerts' && <AlertsNotificationsView />}
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

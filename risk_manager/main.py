@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Union
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 import asyncio
+import os
 import structlog
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, Counter, Histogram, Gauge
 
@@ -100,7 +101,10 @@ position_sizing_engine = PositionSizingEngine(
 )
 stop_loss_manager = StopLossManager(database)
 portfolio_controller = PortfolioRiskController(database)
-goal_tracking_service = GoalTrackingService(database)
+
+# Initialize goal tracking service with alert system integration
+ALERT_SYSTEM_URL = os.getenv('ALERT_SYSTEM_URL', 'http://alert_system:8007')
+goal_tracking_service = GoalTrackingService(database, alert_system_url=ALERT_SYSTEM_URL)
 
 app = FastAPI(
     title="MasterTrade Risk Management API",

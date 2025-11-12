@@ -12,6 +12,7 @@ import {
   FiServer,
   FiTrendingUp
 } from 'react-icons/fi';
+import { InlineFreshness } from './FreshnessIndicator';
 
 /**
  * Service health interface
@@ -269,10 +270,7 @@ export default function SystemHealthView() {
         </div>
         <div className="flex items-center gap-4">
           {lastUpdate && (
-            <div className="flex items-center gap-2 text-sm text-slate-400">
-              <FiClock className="w-4 h-4" />
-              <span>{lastUpdate.toLocaleTimeString()}</span>
-            </div>
+            <InlineFreshness timestamp={lastUpdate} />
           )}
           <button
             onClick={fetchSystemHealth}

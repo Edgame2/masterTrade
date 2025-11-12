@@ -15,6 +15,7 @@ import {
 } from 'react-icons/fi';
 import { BiNetworkChart } from 'react-icons/bi';
 import DataSourceConfigModal from './DataSourceConfigModal';
+import { FreshnessBadge } from './FreshnessIndicator';
 
 interface DataSource {
   name: string;
@@ -276,24 +277,17 @@ export default function DataSourcesView() {
             </div>
 
             {/* Status Badge */}
-            <div className="mb-4">
+            <div className="mb-4 flex items-center justify-between">
               <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(source.status, source.health)}`}>
                 {source.status === 'disabled' ? 'Disabled' : source.health}
               </span>
+              {source.last_update && (
+                <FreshnessBadge timestamp={source.last_update} />
+              )}
             </div>
 
             {/* Metrics */}
             <div className="space-y-3 mb-4">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-gray-600 dark:text-gray-400 flex items-center">
-                  <FiClock className={`w-4 h-4 mr-2 ${getFreshnessColor(source.last_update)}`} />
-                  Last Update
-                </span>
-                <span className="font-medium text-gray-900 dark:text-white">
-                  {formatLastUpdate(source.last_update)}
-                </span>
-              </div>
-
               <div className="flex items-center justify-between text-sm">
                 <span className="text-gray-600 dark:text-gray-400">Success Rate</span>
                 <span className="font-medium text-gray-900 dark:text-white">

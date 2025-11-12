@@ -274,6 +274,21 @@ class RiskPostgresDatabase:
     async def get_all_active_positions(self) -> List[Dict[str, Any]]:
         return await self.get_current_positions()
 
+    async def get_portfolio_value(self) -> float:
+        """
+        Get current portfolio value (sum of all open positions).
+        
+        Returns:
+            Total portfolio value in USD
+        """
+        query = """
+            SELECT COALESCE(SUM(quantity * entry_price), 0) as total_value
+            FROM risk_positions
+            WHERE status = 'open'
+        """
+        record = await self._postgres.fetchrow(query)
+        return float(record['total_value']) if record else 0.0
+
     async def get_position(self, position_id: str) -> Optional[Dict[str, Any]]:
         record = await self._postgres.fetchrow(
             "SELECT * FROM risk_positions WHERE id = $1",
@@ -1110,7 +1125,6 @@ class RiskPostgresDatabase:
         except Exception as e:
             logger.error("Error logging goal adjustment", error=str(e))
     
-    @ensure_connection
     async def update_goal_progress_snapshot(
         self,
         goal_type: str,

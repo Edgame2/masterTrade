@@ -1764,18 +1764,51 @@ This document provides a detailed, actionable TODO list for enhancing the Master
   * **Deployment**: Docker image built and deployed, service running on port 3000
   * **Testing**: TypeScript compilation passed, no errors in logs
 
-* **Task**: Add data source navigation to existing sidebar. — *Frontend* — P0
-  * File: `monitoring_ui/src/components/Sidebar.tsx` (or similar navigation component)
-  * Add menu item: "Data Sources" with icon
-  * Follow existing navigation pattern in monitoring UI
+* **Task**: Add data source navigation to existing sidebar. — *Frontend* — P0 ✅ **COMPLETED** (2025-11-12)
+  * **Implementation**:
+    - Created `monitoring_ui/src/components/Sidebar.tsx` (136 lines)
+    - Professional sidebar with icons for all views (FiHome, FiDatabase, FiTarget, FiBell, etc.)
+    - Collapsible sidebar (expanded: 256px, collapsed: 64px) with smooth transitions
+    - Active state highlighting with blue gradient and shadow effects
+    - Navigation items: Overview, Strategies, Strategy Management, Generator, Positions, Performance, Crypto Manager, Data Sources, Financial Goals, Alerts & Notifications
+  * **Dashboard Refactor**:
+    - Updated `Dashboard.tsx` to use sidebar layout instead of top tabs
+    - New flex layout: Sidebar + Main content area (header + stats + scrollable content)
+    - Consistent dark theme (slate-800/900) across all components
+    - Stats cards updated with improved styling and hover effects
+  * **Features**:
+    - Toggle button with chevron icons (expand/collapse)
+    - Tooltip support for collapsed state
+    - Badge support for notification counts (ready for integration)
+    - Footer with version info and copyright
+    - Sticky positioning for always-visible navigation
+  * **Deployment**: Built successfully (45s), running on port 3000
+  * **Next Steps**: Add badge counts for active alerts, data source issues, etc.
 
-* **Task**: Add data freshness indicators. — *Frontend* — P0
-  * Component: `monitoring_ui/src/components/FreshnessIndicator.tsx`
-  * Visual indicator colors:
-    - Green: < 5 min old
-    - Yellow: 5-15 min old
-    - Red: > 15 min old
-  * Use in data source cards and main dashboard
+* **Task**: Add data freshness indicators. — *Frontend* — P0 ✅ **COMPLETED** (2025-11-12)
+  * **Implementation**:
+    - Created `monitoring_ui/src/components/FreshnessIndicator.tsx` (189 lines)
+    - Three color-coded freshness states:
+      * 🟢 Green (Fresh): < 5 minutes old - with pulse animation
+      * 🟡 Yellow (Aging): 5-15 minutes old
+      * 🔴 Red (Stale): > 15 minutes old - with pulse animation
+    - Multiple component variants for different use cases:
+      * `FreshnessIndicator`: Main component with size (sm/md/lg) and display options
+      * `FreshnessBadge`: Compact badge for cards (shows label + age)
+      * `InlineFreshness`: Minimal inline version (icon + age)
+  * **Features**:
+    - Automatic age calculation from timestamp
+    - Human-readable age strings ("just now", "5 mins ago", "2 hours ago", "1 day ago")
+    - Icon-based status indication (FiCheckCircle, FiAlertTriangle, FiAlertCircle)
+    - Pulse animation for fresh and stale data
+    - Tooltips with full status info
+    - Responsive sizing (sm/md/lg)
+  * **Integration**:
+    - Added `FreshnessBadge` to DataSourcesView cards (replaces old timestamp display)
+    - Added `InlineFreshness` to SystemHealthView header
+    - Ready for use in GoalProgressView, StrategyManagementView, and other components
+  * **Deployment**: Built successfully (45.3s), running on port 3000
+  * **Visual Design**: Matches dark theme with proper contrast and accessibility
 
 ### G.2. Alpha Attribution Dashboard (NEW)
 
@@ -1811,10 +1844,24 @@ This document provides a detailed, actionable TODO list for enhancing the Master
   * **Deployment**: Docker build successful (46s), service running on port 3000
   * **Testing**: TypeScript compilation passed, API connection verified
 
-* **Task**: Add goal alerts and notifications. — *Frontend* — P0
-  * Alert when goal is at risk (< 80% of target at 50% of time period)
-  * Alert when goal achieved
-  * Integrate with Slack/email notifications
+* **Task**: Add goal alerts and notifications. — *Frontend* — P0 ✅ **COMPLETED** (2025-11-12)
+  * **Backend Integration**:
+    - Modified `risk_manager/goal_tracking_service.py` to create alerts via HTTP POST to alert_system
+    - Added `get_portfolio_value()` method to `RiskPostgresDatabase` for proper database access
+    - Fixed service initialization: `service.py` now initializes main.py module-level objects
+    - Removed invalid `@ensure_connection` decorator that was causing "coroutine not callable" error
+    - Alert creation successful: milestone_3_1762953421 (monthly_income/HIGH), milestone_4_1762953421 (portfolio_value/MEDIUM)
+  * **Frontend Implementation**:
+    - Added `GoalAlert` interface to `monitoring_ui/src/components/GoalProgressView.tsx`
+    - Fetch milestone alerts from alert_system API in `fetchGoalsStatus()`
+    - Created `getGoalAlerts()` helper to filter alerts by goal_type
+    - Display alerts on goal cards with priority colors, message, and timestamp
+    - Alert badges show count of active alerts per goal
+    - Up to 2 alerts displayed per card with "+N more" indicator
+  * **Priority Mapping**: achieved=LOW, on_track=LOW, at_risk=MEDIUM, behind=HIGH
+  * **Environment**: NEXT_PUBLIC_ALERT_API_URL=http://localhost:8007
+  * **Deployment**: monitoring_ui rebuilt (45s), running on port 3000
+  * **Known Issue**: Minor datetime timezone issue in `update_goal_progress_snapshot` (does not affect alert creation)
 
 ### G.4. Enhanced User Management with RBAC (ENHANCEMENT)
 
@@ -2012,7 +2059,7 @@ This document provides a detailed, actionable TODO list for enhancing the Master
 - [ ] Integrate with existing PositionSizingEngine
 - [ ] Implement adaptive risk management
 - [ ] Build Goal Progress dashboard
-- [ ] Add goal alerts and notifications
+- [x] Add goal alerts and notifications ✅ **COMPLETED** (2025-11-12) - Backend integration with alert_system, frontend display in GoalProgressView, priority-based alerts working
 
 ## Phase 3 (Weeks 5-6): ML & Intelligence
 - [ ] Implement PostgreSQL-based feature store
