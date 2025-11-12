@@ -94,6 +94,7 @@ class Settings(BaseSettings):
     MAX_STRATEGY_DRAWDOWN: float = 0.15
     MIN_STRATEGY_TRADES: int = 50
     MIN_ACTIVE_STRATEGIES: int = 1000
+    MAX_ACTIVE_STRATEGIES: int = 10  # Maximum number of live trading strategies
     MIN_SIGNAL_STRENGTH: float = 0.6
     
     # Model Paths

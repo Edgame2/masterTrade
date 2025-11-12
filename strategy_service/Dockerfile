@@ -11,6 +11,9 @@ RUN apt-get update && apt-get install -y \
 # Copy shared modules first
 COPY shared/ /app/shared/
 
+# Copy ml_adaptation module
+COPY ml_adaptation/ /app/ml_adaptation/
+
 # Copy service-specific files
 COPY strategy_service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

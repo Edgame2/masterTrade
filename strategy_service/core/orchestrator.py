@@ -52,6 +52,7 @@ class SignalProcessor:
     
 class ModelEnsemble:
     def __init__(self, *args, **kwargs): pass
+    async def initialize(self): pass  # Mock async initialize method
     
 class BacktestingEngine:
     def __init__(self, *args, **kwargs): pass

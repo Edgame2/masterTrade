@@ -11,7 +11,7 @@ import os
 import sys
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 import structlog
 import uvicorn
@@ -204,10 +204,25 @@ def create_rl_agent_manager(*args, **kwargs):
     return MockRLAgent()
 
 class TransformerConfig:
-    pass
+    def __init__(self, sequence_length=128, d_model=512, num_heads=8, num_layers=6,
+                 prediction_horizon=24, num_assets=50, num_features=20):
+        self.sequence_length = sequence_length
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.num_layers = num_layers
+        self.prediction_horizon = prediction_horizon
+        self.num_assets = num_assets
+        self.num_features = num_features
 
 class AgentConfig:
-    pass
+    def __init__(self, state_dim=512, action_dim=10, learning_rate=0.0003, 
+                 gamma=0.99, buffer_size=100000, batch_size=256):
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.learning_rate = learning_rate
+        self.gamma = gamma
+        self.buffer_size = buffer_size
+        self.batch_size = batch_size
 
 # Configure structured logging
 structlog.configure(
@@ -287,6 +302,10 @@ class StrategyService:
         self.automatic_pipeline = None  # NEW: Automatic strategy generation & backtesting
         self.price_prediction_service = None
         
+        # ML Feature Store and Pipeline
+        self.feature_store = None
+        self.feature_pipeline = None
+        
         self.running = False
         self.consumer_tasks: List[asyncio.Task] = []
         
@@ -296,6 +315,36 @@ class StrategyService:
             # Initialize database
             await self.database.connect()
             logger.info("Database connected successfully")
+            
+            # Initialize ML Feature Store and Pipeline
+            try:
+                from ml_adaptation.feature_store import PostgreSQLFeatureStore
+                from ml_adaptation.feature_pipeline import FeatureComputationPipeline
+                
+                # Get PostgresManager from database
+                if hasattr(self.database, '_postgres'):
+                    postgres_manager = self.database._postgres
+                    
+                    # Initialize feature store
+                    self.feature_store = PostgreSQLFeatureStore(postgres_manager)
+                    logger.info("Feature store initialized")
+                    
+                    # Initialize feature pipeline
+                    # Note: We need a market data database instance for feature computation
+                    # For now, we'll use the strategy database (it has access to market data tables)
+                    self.feature_pipeline = FeatureComputationPipeline(
+                        market_data_db=self.database,
+                        feature_store=self.feature_store,
+                        enable_auto_registration=True
+                    )
+                    await self.feature_pipeline.initialize()
+                    logger.info("Feature computation pipeline initialized with auto-registration")
+                else:
+                    logger.warning("PostgresManager not available - feature store disabled")
+            except Exception as e:
+                logger.warning("Feature store initialization failed - features disabled", error=str(e))
+                self.feature_store = None
+                self.feature_pipeline = None
             
             # Initialize Redis cache
             try:
@@ -1115,6 +1164,275 @@ class StrategyService:
         except Exception as e:
             logger.error(f"Error in manual strategy review: {e}")
             raise
+    
+    # Feature-aware strategy evaluation methods
+    async def compute_features_for_symbol(self, symbol: str) -> Dict[str, float]:
+        """
+        Compute ML features for a symbol
+        
+        Args:
+            symbol: Cryptocurrency symbol
+            
+        Returns:
+            Dict of feature_name -> value
+        """
+        try:
+            if not self.feature_pipeline:
+                logger.warning("Feature pipeline not available")
+                return {}
+            
+            features = await self.feature_pipeline.compute_all_features(symbol)
+            logger.info(f"Computed {len(features)} features for {symbol}")
+            return features
+            
+        except Exception as e:
+            logger.error(f"Error computing features for {symbol}: {e}")
+            return {}
+    
+    async def evaluate_strategy_with_features(
+        self,
+        strategy_id: str,
+        symbol: str,
+        include_features: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Evaluate a strategy with optional ML features
+        
+        Args:
+            strategy_id: Strategy ID to evaluate
+            symbol: Symbol to evaluate on
+            include_features: Whether to include ML features
+            
+        Returns:
+            Dict with evaluation results including features if requested
+        """
+        try:
+            # Get strategy configuration
+            strategy = await self.database.get_strategy(strategy_id)
+            if not strategy:
+                return {
+                    "success": False,
+                    "error": f"Strategy {strategy_id} not found"
+                }
+            
+            # Compute features if requested
+            features = {}
+            if include_features:
+                features = await self.compute_features_for_symbol(symbol)
+            
+            # Get traditional indicators (for backwards compatibility)
+            indicators = await self._get_indicators_for_symbol(symbol)
+            
+            # Combine features and indicators for evaluation
+            evaluation_data = {
+                "strategy_id": strategy_id,
+                "symbol": symbol,
+                "features": features,
+                "indicators": indicators,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+            # Generate signal based on strategy type and data
+            signal = await self._generate_signal(strategy, evaluation_data)
+            
+            return {
+                "success": True,
+                "strategy_id": strategy_id,
+                "symbol": symbol,
+                "signal": signal,
+                "feature_count": len(features),
+                "indicator_count": len(indicators),
+                "timestamp": evaluation_data["timestamp"]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error evaluating strategy with features: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    async def _get_indicators_for_symbol(self, symbol: str) -> Dict[str, Any]:
+        """Get technical indicators for a symbol"""
+        try:
+            # Try to get from market data consumer
+            if self.market_data_consumer:
+                # Request recent market data
+                market_data = self.market_data_cache.get(symbol, [])
+                if market_data:
+                    # Extract latest indicators from market data
+                    latest = market_data[-1] if market_data else {}
+                    return latest.get("indicators", {})
+            
+            # Fallback: get from database
+            indicators = await self.database.get_latest_indicators(symbol)
+            return indicators if indicators else {}
+            
+        except Exception as e:
+            logger.error(f"Error getting indicators for {symbol}: {e}")
+            return {}
+    
+    async def _generate_signal(
+        self,
+        strategy: Dict,
+        evaluation_data: Dict
+    ) -> Dict[str, Any]:
+        """
+        Generate trading signal from strategy and evaluation data
+        
+        Args:
+            strategy: Strategy configuration
+            evaluation_data: Dict with features, indicators, symbol
+            
+        Returns:
+            Trading signal dict
+        """
+        try:
+            features = evaluation_data.get("features", {})
+            indicators = evaluation_data.get("indicators", {})
+            strategy_type = strategy.get("type", "unknown")
+            
+            # Default signal
+            signal = {
+                "action": "HOLD",
+                "confidence": 0.0,
+                "reason": "No clear signal"
+            }
+            
+            # Feature-based signal generation (if features available)
+            if features:
+                signal = await self._generate_feature_based_signal(
+                    strategy_type, features, indicators
+                )
+            # Fallback to indicator-based signals
+            elif indicators:
+                signal = self._generate_indicator_based_signal(
+                    strategy_type, indicators
+                )
+            
+            return signal
+            
+        except Exception as e:
+            logger.error(f"Error generating signal: {e}")
+            return {
+                "action": "HOLD",
+                "confidence": 0.0,
+                "reason": f"Error: {str(e)}"
+            }
+    
+    async def _generate_feature_based_signal(
+        self,
+        strategy_type: str,
+        features: Dict[str, float],
+        indicators: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Generate signal using ML features
+        
+        This is a simple rule-based approach that can be enhanced with:
+        - Trained ML models
+        - Ensemble methods
+        - Reinforcement learning agents
+        """
+        # Extract key features
+        rsi = features.get("rsi_14", 50.0)
+        macd_histogram = features.get("macd_histogram", 0.0)
+        social_sentiment = features.get("social_sentiment_avg", 0.0)
+        risk_score = features.get("composite_risk_score", 50.0)
+        sentiment_alignment = features.get("composite_sentiment_alignment", 0.0)
+        market_strength = features.get("composite_market_strength", 0.0)
+        
+        # Calculate composite score
+        bullish_score = 0.0
+        bearish_score = 0.0
+        
+        # RSI contribution
+        if rsi < 30:
+            bullish_score += 0.3
+        elif rsi > 70:
+            bearish_score += 0.3
+        
+        # MACD contribution
+        if macd_histogram > 0:
+            bullish_score += 0.2
+        elif macd_histogram < 0:
+            bearish_score += 0.2
+        
+        # Social sentiment contribution
+        if social_sentiment > 0.3:
+            bullish_score += 0.2
+        elif social_sentiment < -0.3:
+            bearish_score += 0.2
+        
+        # Composite features contribution
+        if sentiment_alignment > 0.5:
+            bullish_score += 0.15
+        elif sentiment_alignment < -0.5:
+            bearish_score += 0.15
+        
+        if market_strength > 0.5:
+            bullish_score += 0.15
+        elif market_strength < -0.5:
+            bearish_score += 0.15
+        
+        # Determine action and confidence
+        if bullish_score > bearish_score and bullish_score > 0.5:
+            action = "BUY"
+            confidence = min(bullish_score, 1.0)
+            reason = f"Bullish signals (score: {bullish_score:.2f})"
+        elif bearish_score > bullish_score and bearish_score > 0.5:
+            action = "SELL"
+            confidence = min(bearish_score, 1.0)
+            reason = f"Bearish signals (score: {bearish_score:.2f})"
+        else:
+            action = "HOLD"
+            confidence = abs(bullish_score - bearish_score)
+            reason = f"Mixed signals (bull: {bullish_score:.2f}, bear: {bearish_score:.2f})"
+        
+        return {
+            "action": action,
+            "confidence": round(confidence, 3),
+            "reason": reason,
+            "bullish_score": round(bullish_score, 3),
+            "bearish_score": round(bearish_score, 3),
+            "features_used": {
+                "rsi_14": rsi,
+                "macd_histogram": macd_histogram,
+                "social_sentiment_avg": social_sentiment,
+                "composite_risk_score": risk_score,
+                "composite_sentiment_alignment": sentiment_alignment,
+                "composite_market_strength": market_strength
+            }
+        }
+    
+    def _generate_indicator_based_signal(
+        self,
+        strategy_type: str,
+        indicators: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Generate signal using traditional indicators (fallback)
+        """
+        rsi = indicators.get("rsi_14", 50.0)
+        
+        if rsi < 30:
+            return {
+                "action": "BUY",
+                "confidence": 0.6,
+                "reason": f"RSI oversold ({rsi})"
+            }
+        elif rsi > 70:
+            return {
+                "action": "SELL",
+                "confidence": 0.6,
+                "reason": f"RSI overbought ({rsi})"
+            }
+        else:
+            return {
+                "action": "HOLD",
+                "confidence": 0.5,
+                "reason": f"RSI neutral ({rsi})"
+            }
     
     # Cached API helper methods for performance optimization
     @cached(prefix='dashboard_perf', ttl=60, key_func=lambda self: 'dashboard')

@@ -1115,6 +1115,403 @@ def create_strategy_api(strategy_service) -> FastAPI:
                 detail=str(e)
             )
     
+    # =========================================================================
+    # Feature Store & ML Features Endpoints
+    # =========================================================================
+    
+    @app.get("/api/v1/features/compute/{symbol}")
+    async def compute_features(symbol: str):
+        """
+        Compute all ML features for a symbol
+        
+        Returns computed features without storing them in the feature store.
+        Useful for real-time feature inspection.
+        """
+        try:
+            if not hasattr(strategy_service, 'feature_pipeline') or not strategy_service.feature_pipeline:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Feature pipeline not initialized"
+                )
+            
+            features = await strategy_service.feature_pipeline.compute_all_features(symbol)
+            
+            return {
+                "success": True,
+                "symbol": symbol,
+                "features": features,
+                "feature_count": len(features),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error computing features for {symbol}: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to compute features: {str(e)}"
+            )
+    
+    @app.post("/api/v1/features/compute-and-store/{symbol}")
+    async def compute_and_store_features(symbol: str):
+        """
+        Compute and store ML features for a symbol
+        
+        Computes all feature types and stores them in the PostgreSQL feature store.
+        Auto-registers new features if enabled.
+        """
+        try:
+            if not hasattr(strategy_service, 'feature_pipeline') or not strategy_service.feature_pipeline:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Feature pipeline not initialized"
+                )
+            
+            feature_count = await strategy_service.feature_pipeline.compute_and_store_features(symbol)
+            
+            return {
+                "success": True,
+                "symbol": symbol,
+                "features_stored": feature_count,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error storing features for {symbol}: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to store features: {str(e)}"
+            )
+    
+    @app.get("/api/v1/features/retrieve/{symbol}")
+    async def retrieve_features(
+        symbol: str,
+        feature_names: Optional[str] = Query(None, description="Comma-separated feature names"),
+        as_of_time: Optional[str] = Query(None, description="Point-in-time timestamp (ISO format)")
+    ):
+        """
+        Retrieve stored features for a symbol
+        
+        Args:
+            symbol: Cryptocurrency symbol
+            feature_names: Optional comma-separated list of feature names to retrieve
+            as_of_time: Optional timestamp for point-in-time retrieval (for backtesting)
+        """
+        try:
+            if not hasattr(strategy_service, 'feature_store') or not strategy_service.feature_store:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Feature store not initialized"
+                )
+            
+            # Parse timestamp if provided
+            timestamp = None
+            if as_of_time:
+                try:
+                    timestamp = datetime.fromisoformat(as_of_time.replace('Z', '+00:00'))
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid as_of_time format. Use ISO format (e.g., 2025-11-11T14:00:00Z)"
+                    )
+            
+            # Get feature IDs for the specified names
+            if feature_names:
+                names = [name.strip() for name in feature_names.split(',')]
+                feature_ids = []
+                for name in names:
+                    fid = await strategy_service.feature_store.get_feature_id(name)
+                    if fid:
+                        feature_ids.append(fid)
+                
+                if not feature_ids:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="No matching features found"
+                    )
+                
+                # Bulk retrieval
+                features = await strategy_service.feature_store.get_features_bulk(
+                    feature_ids=feature_ids,
+                    symbol=symbol,
+                    as_of_time=timestamp
+                )
+                
+                # Convert feature_id back to feature_name
+                result = {}
+                for fid, value in features.items():
+                    # Get feature name from ID
+                    feature_def = await strategy_service.feature_store.get_feature_definition(fid)
+                    if feature_def:
+                        result[feature_def.feature_name] = value
+            else:
+                # Get all features for symbol
+                # We need to list all registered features and retrieve them
+                all_features = await strategy_service.feature_store.list_features(active_only=True)
+                feature_ids = [f.id for f in all_features]
+                
+                if not feature_ids:
+                    return {
+                        "success": True,
+                        "symbol": symbol,
+                        "features": {},
+                        "feature_count": 0,
+                        "as_of_time": as_of_time,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                
+                features = await strategy_service.feature_store.get_features_bulk(
+                    feature_ids=feature_ids,
+                    symbol=symbol,
+                    as_of_time=timestamp
+                )
+                
+                # Convert to feature names
+                result = {}
+                for fid, value in features.items():
+                    feature_def = await strategy_service.feature_store.get_feature_definition(fid)
+                    if feature_def:
+                        result[feature_def.feature_name] = value
+            
+            return {
+                "success": True,
+                "symbol": symbol,
+                "features": result,
+                "feature_count": len(result),
+                "as_of_time": as_of_time,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error retrieving features for {symbol}: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to retrieve features: {str(e)}"
+            )
+    
+    @app.get("/api/v1/features/list")
+    async def list_features(
+        feature_type: Optional[str] = Query(None, description="Filter by type: technical, onchain, social, macro, composite"),
+        active_only: bool = Query(True, description="Include only active features")
+    ):
+        """
+        List all registered features in the feature store
+        
+        Args:
+            feature_type: Optional filter by feature type
+            active_only: Whether to include only active features
+        """
+        try:
+            if not hasattr(strategy_service, 'feature_store') or not strategy_service.feature_store:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Feature store not initialized"
+                )
+            
+            features = await strategy_service.feature_store.list_features(
+                feature_type=feature_type,
+                active_only=active_only
+            )
+            
+            feature_list = [
+                {
+                    "id": f.id,
+                    "name": f.feature_name,
+                    "type": f.feature_type,
+                    "description": f.description,
+                    "data_sources": f.data_sources,
+                    "version": f.version,
+                    "is_active": f.is_active,
+                    "created_at": f.created_at.isoformat() if f.created_at else None
+                }
+                for f in features
+            ]
+            
+            return {
+                "success": True,
+                "features": feature_list,
+                "count": len(feature_list),
+                "filter": {
+                    "feature_type": feature_type,
+                    "active_only": active_only
+                },
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error listing features: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to list features: {str(e)}"
+            )
+    
+    @app.get("/api/v1/features/summary")
+    async def get_feature_summary():
+        """
+        Get summary statistics of the feature store
+        
+        Returns counts, types, and metadata about stored features.
+        """
+        try:
+            if not hasattr(strategy_service, 'feature_pipeline') or not strategy_service.feature_pipeline:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Feature pipeline not initialized"
+                )
+            
+            summary = await strategy_service.feature_pipeline.get_feature_summary()
+            
+            return {
+                "success": True,
+                "summary": summary,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting feature summary: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to get feature summary: {str(e)}"
+            )
+    
+    # ==========================================
+    # Feature-Aware Strategy Evaluation Endpoints
+    # ==========================================
+    
+    @app.post("/api/v1/strategy/evaluate-with-features")
+    async def evaluate_strategy_with_features(
+        strategy_id: str,
+        symbol: str,
+        include_features: bool = True
+    ):
+        """
+        Evaluate a strategy with optional ML features
+        
+        Args:
+            strategy_id: Strategy ID to evaluate
+            symbol: Cryptocurrency symbol
+            include_features: Whether to include ML features (default: True)
+            
+        Returns:
+            Evaluation results including signal, confidence, and features used
+        """
+        try:
+            result = await strategy_service.evaluate_strategy_with_features(
+                strategy_id=strategy_id,
+                symbol=symbol,
+                include_features=include_features
+            )
+            
+            if not result.get("success", False):
+                raise HTTPException(
+                    status_code=404,
+                    detail=result.get("error", "Evaluation failed")
+                )
+            
+            return result
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error evaluating strategy with features: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to evaluate strategy: {str(e)}"
+            )
+    
+    @app.get("/api/v1/strategy/signal/{strategy_id}/{symbol}")
+    async def get_strategy_signal(
+        strategy_id: str,
+        symbol: str,
+        use_features: bool = Query(True, description="Use ML features for signal generation")
+    ):
+        """
+        Get trading signal from a strategy for a symbol
+        
+        This endpoint evaluates the strategy and returns a trading signal
+        (BUY/SELL/HOLD) with confidence and reasoning.
+        
+        Args:
+            strategy_id: Strategy ID
+            symbol: Cryptocurrency symbol
+            use_features: Whether to use ML features (default: True)
+            
+        Returns:
+            Trading signal with action, confidence, and reasoning
+        """
+        try:
+            result = await strategy_service.evaluate_strategy_with_features(
+                strategy_id=strategy_id,
+                symbol=symbol,
+                include_features=use_features
+            )
+            
+            if not result.get("success", False):
+                raise HTTPException(
+                    status_code=404,
+                    detail=result.get("error", "Signal generation failed")
+                )
+            
+            return {
+                "success": True,
+                "strategy_id": strategy_id,
+                "symbol": symbol,
+                "signal": result.get("signal", {}),
+                "features_used": use_features,
+                "feature_count": result.get("feature_count", 0),
+                "timestamp": result.get("timestamp")
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error generating strategy signal: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to generate signal: {str(e)}"
+            )
+    
+    @app.get("/api/v1/features/compute-for-signal/{symbol}")
+    async def compute_features_for_signal(symbol: str):
+        """
+        Compute ML features for a symbol for signal generation
+        
+        This is a convenience endpoint to see what features would be
+        used for signal generation without actually generating a signal.
+        
+        Args:
+            symbol: Cryptocurrency symbol
+            
+        Returns:
+            Computed features and their values
+        """
+        try:
+            features = await strategy_service.compute_features_for_symbol(symbol)
+            
+            return {
+                "success": True,
+                "symbol": symbol,
+                "features": features,
+                "feature_count": len(features),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error computing features for signal: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to compute features: {str(e)}"
+            )
+    
     # Include enhanced strategy activation router
     if hasattr(strategy_service, 'enhanced_activation_system') and strategy_service.enhanced_activation_system:
         set_activation_system(strategy_service.enhanced_activation_system)
