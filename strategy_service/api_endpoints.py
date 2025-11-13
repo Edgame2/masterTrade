@@ -1523,4 +1523,291 @@ def create_strategy_api(strategy_service) -> FastAPI:
         app.include_router(activation_router)
         logger.info("Enhanced strategy activation API registered")
     
+    # ============================================================
+    # GOAL-ORIENTED TRADING API ENDPOINTS
+    # ============================================================
+    
+    @app.get("/api/v1/goals/summary")
+    async def get_goals_summary(goal_id: Optional[str] = None):
+        """
+        Get summary of financial goals and their progress.
+        
+        Returns overview of all active goals including:
+        - Monthly return target (10%)
+        - Monthly profit target ($10K)
+        - Portfolio value target ($1M)
+        
+        Args:
+            goal_id: Optional specific goal ID (None = all goals)
+            
+        Returns:
+            Goal summary with progress metrics
+        """
+        try:
+            from goal_tracker import GoalTracker
+            
+            tracker = GoalTracker(strategy_service.db)
+            summary = await tracker.get_goal_summary(goal_id)
+            
+            return {
+                "success": True,
+                "data": summary,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching goal summary: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to fetch goal summary: {str(e)}"
+            )
+    
+    @app.get("/api/v1/goals/{goal_id}/progress")
+    async def get_goal_progress_history(
+        goal_id: str,
+        limit: int = Query(100, ge=1, le=1000, description="Number of progress records")
+    ):
+        """
+        Get historical progress tracking for a specific goal.
+        
+        Args:
+            goal_id: Goal UUID
+            limit: Number of records to return
+            
+        Returns:
+            Time-series data of goal progress
+        """
+        try:
+            import uuid
+            query = """
+                SELECT * FROM goal_progress
+                WHERE goal_id = $1
+                ORDER BY timestamp DESC
+                LIMIT $2
+            """
+            records = await strategy_service.db._postgres.fetch(query, uuid.UUID(goal_id), limit)
+            
+            progress_data = []
+            for record in records:
+                progress_data.append({
+                    "timestamp": record["timestamp"].isoformat(),
+                    "current_value": float(record["current_value"]),
+                    "progress_pct": float(record["progress_pct"]),
+                    "portfolio_value": float(record["portfolio_value"]),
+                    "realized_pnl": float(record["realized_pnl"]),
+                    "unrealized_pnl": float(record["unrealized_pnl"]),
+                    "win_rate": float(record["win_rate"]) if record["win_rate"] else None,
+                    "sharpe_ratio": float(record["sharpe_ratio"]) if record["sharpe_ratio"] else None,
+                    "on_track": record["on_track"],
+                    "required_daily_return": float(record["required_daily_return"]) if record["required_daily_return"] else None
+                })
+            
+            return {
+                "success": True,
+                "goal_id": goal_id,
+                "progress_history": progress_data,
+                "count": len(progress_data)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching goal progress: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to fetch goal progress: {str(e)}"
+            )
+    
+    @app.get("/api/v1/goals/{goal_id}/adjustments")
+    async def get_goal_adjustments(goal_id: str, limit: int = Query(50, ge=1, le=500)):
+        """
+        Get automatic adjustments made to achieve a goal.
+        
+        Shows how risk tolerance and position sizes have been adjusted
+        based on goal progress.
+        
+        Args:
+            goal_id: Goal UUID
+            limit: Number of adjustments to return
+            
+        Returns:
+            List of adjustments with before/after values
+        """
+        try:
+            import uuid
+            query = """
+                SELECT * FROM goal_adjustments
+                WHERE goal_id = $1
+                ORDER BY applied_at DESC
+                LIMIT $2
+            """
+            records = await strategy_service.db._postgres.fetch(query, uuid.UUID(goal_id), limit)
+            
+            adjustments = []
+            for record in records:
+                adjustments.append({
+                    "id": str(record["id"]),
+                    "adjustment_type": record["adjustment_type"],
+                    "reason": record["reason"],
+                    "previous_value": float(record["previous_value"]) if record["previous_value"] else None,
+                    "new_value": float(record["new_value"]) if record["new_value"] else None,
+                    "applied_at": record["applied_at"].isoformat(),
+                    "status": record["status"]
+                })
+            
+            return {
+                "success": True,
+                "goal_id": goal_id,
+                "adjustments": adjustments,
+                "count": len(adjustments)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching goal adjustments: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to fetch goal adjustments: {str(e)}"
+            )
+    
+    @app.post("/api/v1/goals/{goal_id}/update-progress")
+    async def trigger_goal_progress_update(goal_id: str):
+        """
+        Manually trigger a progress update for a specific goal.
+        
+        Normally runs hourly automatically, but can be triggered manually
+        for immediate feedback.
+        
+        Args:
+            goal_id: Goal UUID
+            
+        Returns:
+            Updated progress metrics
+        """
+        try:
+            from goal_tracker import GoalTracker
+            
+            tracker = GoalTracker(strategy_service.db)
+            await tracker.update_goal_progress(goal_id)
+            
+            # Get updated summary
+            summary = await tracker.get_goal_summary(goal_id)
+            
+            return {
+                "success": True,
+                "message": "Goal progress updated",
+                "data": summary
+            }
+            
+        except Exception as e:
+            logger.error(f"Error updating goal progress: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to update goal progress: {str(e)}"
+            )
+    
+    @app.post("/api/v1/position-sizing/calculate")
+    async def calculate_position_size(
+        strategy_id: str,
+        symbol: str,
+        current_price: float,
+        stop_loss_pct: float,
+        confidence: float = 0.5,
+        goal_id: Optional[str] = None
+    ):
+        """
+        Calculate optimal position size based on goal-oriented sizing.
+        
+        Takes into account:
+        - Goal progress (ahead/behind schedule)
+        - Current portfolio value
+        - Win rate and Sharpe ratio
+        - Kelly Criterion
+        - Risk tolerance
+        
+        Args:
+            strategy_id: Strategy generating signal
+            symbol: Trading pair (e.g., 'BTCUSDT')
+            current_price: Current market price
+            stop_loss_pct: Stop loss distance as % (e.g., 0.02 for 2%)
+            confidence: Model confidence in signal (0-1)
+            goal_id: Specific goal to optimize for (None = highest priority)
+            
+        Returns:
+            Recommended position size, allocation %, risk amount, reasoning
+        """
+        try:
+            from decimal import Decimal
+            from position_sizing_engine import GoalOrientedPositionSizer
+            
+            sizer = GoalOrientedPositionSizer(strategy_service.db)
+            
+            recommendation = await sizer.calculate_position_size(
+                strategy_id=strategy_id,
+                symbol=symbol,
+                current_price=Decimal(str(current_price)),
+                stop_loss_pct=Decimal(str(stop_loss_pct)),
+                confidence=Decimal(str(confidence)),
+                goal_id=goal_id
+            )
+            
+            return {
+                "success": True,
+                "recommendation": recommendation,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating position size: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to calculate position size: {str(e)}"
+            )
+    
+    @app.get("/api/v1/goals/milestones/{goal_id}")
+    async def get_goal_milestones(goal_id: str):
+        """
+        Get milestones for a specific goal.
+        
+        Milestones are intermediate targets towards the main goal
+        (e.g., "First $1K profit", "10 consecutive wins").
+        
+        Args:
+            goal_id: Goal UUID
+            
+        Returns:
+            List of milestones with achievement status
+        """
+        try:
+            import uuid
+            query = """
+                SELECT * FROM goal_milestones
+                WHERE goal_id = $1
+                ORDER BY milestone_value
+            """
+            records = await strategy_service.db._postgres.fetch(query, uuid.UUID(goal_id))
+            
+            milestones = []
+            for record in records:
+                milestones.append({
+                    "id": str(record["id"]),
+                    "milestone_name": record["milestone_name"],
+                    "milestone_value": float(record["milestone_value"]),
+                    "achieved": record["achieved"],
+                    "achieved_at": record["achieved_at"].isoformat() if record["achieved_at"] else None,
+                    "reward_action": record["reward_action"]
+                })
+            
+            return {
+                "success": True,
+                "goal_id": goal_id,
+                "milestones": milestones,
+                "total": len(milestones),
+                "achieved_count": sum(1 for m in milestones if m["achieved"])
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching goal milestones: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to fetch goal milestones: {str(e)}"
+            )
+    
     return app

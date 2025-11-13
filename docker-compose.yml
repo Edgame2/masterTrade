@@ -379,7 +379,7 @@ services:
 
   # PgBouncer - PostgreSQL Connection Pooler
   pgbouncer:
-    image: edoburu/pgbouncer:latest
+    image: pgbouncer/pgbouncer:latest
     container_name: mastertrade_pgbouncer
     environment:
       - DATABASES_HOST=postgres
@@ -387,13 +387,16 @@ services:
       - DATABASES_USER=${POSTGRES_USER:-mastertrade}
       - DATABASES_PASSWORD=${POSTGRES_PASSWORD:-mastertrade}
       - DATABASES_DBNAME=${POSTGRES_DB:-mastertrade}
-      - POOL_MODE=transaction
-      - MAX_CLIENT_CONN=100
-      - DEFAULT_POOL_SIZE=20
-      - MIN_POOL_SIZE=5
-      - RESERVE_POOL_SIZE=5
-      - MAX_DB_CONNECTIONS=50
-      - MAX_USER_CONNECTIONS=50
+      - PGBOUNCER_AUTH_TYPE=trust
+      - PGBOUNCER_POOL_MODE=transaction
+      - PGBOUNCER_MAX_CLIENT_CONN=100
+      - PGBOUNCER_DEFAULT_POOL_SIZE=20
+      - PGBOUNCER_MIN_POOL_SIZE=5
+      - PGBOUNCER_RESERVE_POOL_SIZE=5
+      - PGBOUNCER_MAX_DB_CONNECTIONS=50
+      - PGBOUNCER_MAX_USER_CONNECTIONS=50
+      - PGBOUNCER_LOG_CONNECTIONS=1
+      - PGBOUNCER_LOG_DISCONNECTIONS=1
     ports:
       - "6432:5432"  # PgBouncer exposed on 6432
     depends_on:
@@ -403,7 +406,7 @@ services:
       - mastertrade_network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "psql", "-U", "mastertrade", "-h", "localhost", "-c", "SELECT 1"]
+      test: ["CMD-SHELL", "PGPASSWORD=${POSTGRES_PASSWORD:-mastertrade} psql -h localhost -U ${POSTGRES_USER:-mastertrade} -p 5432 -d pgbouncer -c 'SHOW POOLS;' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
