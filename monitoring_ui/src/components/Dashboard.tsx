@@ -16,11 +16,12 @@ import SystemHealthView from './SystemHealthView';
 import StrategyManagementView from './StrategyManagementView';
 import AlertsNotificationsView from './AlertsNotificationsView';
 import UserManagementView from './UserManagementView';
+import AlphaAttributionView from './AlphaAttributionView';
 import { useWebSocket } from '@/hooks/useWebSocket';
 
 export default function Dashboard() {
   const { data: session } = useSession();
-  const [activeTab, setActiveTab] = useState<'overview' | 'strategies' | 'generator' | 'positions' | 'performance' | 'crypto' | 'datasources' | 'goals' | 'strategy-mgmt' | 'alerts' | 'users'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'strategies' | 'generator' | 'positions' | 'performance' | 'crypto' | 'datasources' | 'goals' | 'alpha' | 'strategy-mgmt' | 'alerts' | 'users'>('overview');
   const [stats, setStats] = useState({
     totalPnL: 0,
     totalValue: 0,
@@ -184,6 +185,7 @@ export default function Dashboard() {
             {activeTab === 'crypto' && <CryptoManager />}
             {activeTab === 'datasources' && <DataSourcesView />}
             {activeTab === 'goals' && <GoalProgressView />}
+            {activeTab === 'alpha' && <AlphaAttributionView />}
             {activeTab === 'strategy-mgmt' && <StrategyManagementView />}
             {activeTab === 'alerts' && <AlertsNotificationsView />}
             {activeTab === 'users' && <UserManagementView />}

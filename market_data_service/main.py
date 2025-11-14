@@ -2881,6 +2881,368 @@ async def api_v1_whale_transactions(request):
             'error': str(e)
         }, status=500)
 
+# ============================================================================
+# DeFi Protocol Metrics Endpoints
+# ============================================================================
+
+async def api_v1_collect_defi_metrics(request):
+    """
+    POST /api/v1/defi/collect
+    
+    Trigger DeFi protocol metrics collection.
+    
+    Request Body (optional):
+        {
+            "protocols": ["uniswap_v3", "aave_v3", ...],  // Specific protocols, or null for all
+            "include_dune": true  // Whether to include Dune Analytics (requires API key)
+        }
+    
+    Returns:
+        JSON response with collection results
+    """
+    service = request.app['service']
+    
+    try:
+        # Parse request body if present
+        protocols = None
+        if request.body_exists:
+            data = await request.json()
+            protocols = data.get('protocols')
+            
+        from defi_protocol_collector import DeFiProtocolCollector
+        
+        dune_api_key = os.getenv("DUNE_API_KEY")
+        collector = DeFiProtocolCollector(service.database, dune_api_key)
+        
+        try:
+            if protocols:
+                # Collect specific protocols
+                results = {"protocols": {}, "total_tvl_usd": 0.0}
+                for protocol in protocols:
+                    if protocol.startswith("uniswap"):
+                        version = protocol.split("_")[1]
+                        metrics = await collector.collect_uniswap_metrics(version)
+                    elif protocol.startswith("aave"):
+                        version = protocol.split("_")[1]
+                        metrics = await collector.collect_aave_metrics(version)
+                    elif protocol == "curve":
+                        metrics = await collector.collect_curve_metrics()
+                    elif protocol == "compound":
+                        metrics = await collector.collect_compound_metrics()
+                    else:
+                        continue
+                        
+                    if metrics:
+                        results["protocols"][protocol] = metrics
+                        results["total_tvl_usd"] += metrics.get("tvl_usd", 0)
+            else:
+                # Collect all protocols
+                results = await collector.collect_all_protocols()
+        finally:
+            await collector.close()
+            
+        return web.json_response({
+            'success': True,
+            'data': {
+                'protocols_collected': len(results.get('protocols', {})),
+                'total_tvl_usd': results.get('total_tvl_usd', 0),
+                'protocols': results.get('protocols', {})
+            },
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except Exception as e:
+        logger.error("Error collecting DeFi metrics", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def api_v1_get_defi_metrics(request):
+    """
+    GET /api/v1/defi/metrics
+    
+    Get DeFi protocol metrics.
+    
+    Query Parameters:
+        - protocol (str, optional): Filter by protocol name
+        - category (str, optional): Filter by category (dex, lending, staking, etc.)
+        - start_time (ISO timestamp, optional): Start time filter
+        - end_time (ISO timestamp, optional): End time filter
+        - limit (int, default=100): Maximum number of results
+    
+    Returns:
+        JSON response with DeFi metrics
+    """
+    service = request.app['service']
+    
+    try:
+        protocol = request.query.get('protocol')
+        category = request.query.get('category')
+        limit = int(request.query.get('limit', 100))
+        
+        start_time = None
+        end_time = None
+        
+        if 'start_time' in request.query:
+            start_time = datetime.fromisoformat(request.query['start_time'].replace('Z', '+00:00'))
+        if 'end_time' in request.query:
+            end_time = datetime.fromisoformat(request.query['end_time'].replace('Z', '+00:00'))
+            
+        metrics = await service.database.get_defi_protocol_metrics(
+            protocol=protocol,
+            category=category,
+            start_time=start_time,
+            end_time=end_time,
+            limit=limit
+        )
+        
+        return web.json_response({
+            'success': True,
+            'data': {
+                'count': len(metrics),
+                'metrics': metrics
+            },
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except ValueError as e:
+        return web.json_response({
+            'success': False,
+            'error': f'Invalid parameter value: {str(e)}'
+        }, status=400)
+    except Exception as e:
+        logger.error("Error getting DeFi metrics", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def api_v1_whale_clustering_batch(request):
+    """
+    POST /api/v1/onchain/whale-clustering/batch
+    
+    Run batch whale wallet clustering analysis.
+    
+    Query Parameters:
+        - hours (int, default=24): Hours of transaction history to analyze
+        - limit (int, default=1000): Maximum transactions to process
+    
+    Returns:
+        JSON response with clustering results
+    """
+    service = request.app['service']
+    
+    try:
+        hours = int(request.query.get('hours', '24'))
+        limit = int(request.query.get('limit', '1000'))
+        
+        # Import clustering module
+        from whale_wallet_clustering import WhaleWalletClusterer
+        
+        # Initialize clusterer
+        clusterer = WhaleWalletClusterer(service.database)
+        
+        # Run batch processing
+        results = await clusterer.process_whale_transactions_batch(
+            hours=hours,
+            limit=limit
+        )
+        
+        return web.json_response({
+            'success': True,
+            'data': {
+                'status': results['status'],
+                'transactions_processed': results['transactions_processed'],
+                'clusters_found': results['clusters_found'],
+                'unique_addresses': results['unique_addresses'],
+                'network_edges': results['network_edges']
+            },
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except Exception as e:
+        logger.error("Error in whale clustering batch", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def api_v1_get_wallet_clusters(request):
+    """
+    GET /api/v1/onchain/wallet-clusters
+    
+    Get all wallet clusters.
+    
+    Query Parameters:
+        - category (str, optional): Filter by category (exchange, whale, defi_protocol, etc.)
+        - limit (int, default=100): Maximum number of clusters to return
+    
+    Returns:
+        JSON response with wallet clusters
+    """
+    service = request.app['service']
+    
+    try:
+        category = request.query.get('category')
+        limit = int(request.query.get('limit', '100'))
+        
+        clusters = await service.database.get_all_clusters(
+            limit=limit,
+            category=category
+        )
+        
+        return web.json_response({
+            'success': True,
+            'data': clusters,
+            'count': len(clusters),
+            'filters': {
+                'category': category,
+                'limit': limit
+            },
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except Exception as e:
+        logger.error("Error getting wallet clusters", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def api_v1_get_cluster_by_address(request):
+    """
+    GET /api/v1/onchain/wallet-cluster/address/{address}
+    
+    Get cluster containing a specific wallet address.
+    
+    Path Parameters:
+        - address (str): Wallet address
+    
+    Returns:
+        JSON response with cluster information
+    """
+    service = request.app['service']
+    address = request.match_info['address']
+    
+    try:
+        cluster = await service.database.get_cluster_by_address(address)
+        
+        if not cluster:
+            return web.json_response({
+                'success': False,
+                'error': f'No cluster found for address {address}'
+            }, status=404)
+        
+        return web.json_response({
+            'success': True,
+            'data': cluster,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except Exception as e:
+        logger.error("Error getting cluster by address", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def api_v1_get_wallet_label(request):
+    """
+    GET /api/v1/onchain/wallet-label/{address}
+    
+    Get label for a specific wallet address.
+    
+    Path Parameters:
+        - address (str): Wallet address
+    
+    Returns:
+        JSON response with wallet label
+    """
+    service = request.app['service']
+    address = request.match_info['address']
+    
+    try:
+        label = await service.database.get_wallet_label_by_address(address)
+        
+        if not label:
+            # Label address if not exists
+            from whale_wallet_clustering import WhaleWalletClusterer
+            clusterer = WhaleWalletClusterer(service.database)
+            label = await clusterer.label_address(address)
+        
+        return web.json_response({
+            'success': True,
+            'data': label,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except Exception as e:
+        logger.error("Error getting wallet label", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def api_v1_get_wallet_network(request):
+    """
+    GET /api/v1/onchain/wallet-network
+    
+    Get wallet network graph for analysis.
+    
+    Query Parameters:
+        - hours (int, default=24): Hours of transaction history
+        - limit (int, default=500): Maximum transactions
+        - min_amount (float, optional): Minimum transaction amount
+    
+    Returns:
+        JSON response with network graph (nodes and edges)
+    """
+    service = request.app['service']
+    
+    try:
+        hours = int(request.query.get('hours', '24'))
+        limit = int(request.query.get('limit', '500'))
+        min_amount = request.query.get('min_amount')
+        
+        # Fetch transactions
+        transactions = await service.database.get_whale_transactions(
+            hours=hours,
+            min_amount=float(min_amount) if min_amount else None,
+            limit=limit
+        )
+        
+        # Build network
+        from whale_wallet_clustering import WhaleWalletClusterer
+        clusterer = WhaleWalletClusterer(service.database)
+        network = await clusterer.build_wallet_network(transactions)
+        
+        return web.json_response({
+            'success': True,
+            'data': {
+                'nodes': list(network['nodes'].values()),
+                'edges': network['edges'],
+                'stats': {
+                    'node_count': len(network['nodes']),
+                    'edge_count': len(network['edges']),
+                    'total_volume': sum(n['total_volume'] for n in network['nodes'].values())
+                }
+            },
+            'filters': {
+                'hours': hours,
+                'limit': limit,
+                'min_amount': min_amount
+            },
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except Exception as e:
+        logger.error("Error building wallet network", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
 async def api_v1_onchain_metrics_by_symbol(request):
     """
     GET /api/v1/onchain/metrics/{symbol}
@@ -3068,6 +3430,219 @@ async def api_v1_wallet_info(request):
         }, status=400)
     except Exception as e:
         logger.error("Error getting wallet info", error=str(e), address=address)
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+# ============================================================================
+# Enhanced REST API v1 - Exchange Data Endpoints
+# ============================================================================
+
+async def api_v1_get_large_trades(request):
+    """
+    GET /api/v1/exchange/large-trades
+    
+    Get large trades detected across all exchanges.
+    
+    Query Parameters:
+        - exchange (str, optional): Filter by exchange (binance, coinbase, deribit, cme)
+        - symbol (str, optional): Filter by symbol
+        - hours (int, default=24): Hours of history
+        - min_value_usd (float, optional): Minimum USD value filter
+        - only_liquidations (bool, default=false): Only return liquidations
+        - limit (int, default=100): Maximum results
+    
+    Returns:
+        JSON response with large trades
+    """
+    service = request.app['service']
+    
+    try:
+        exchange = request.query.get('exchange')
+        symbol = request.query.get('symbol')
+        hours = int(request.query.get('hours', 24))
+        limit = int(request.query.get('limit', 100))
+        only_liquidations = request.query.get('only_liquidations', 'false').lower() == 'true'
+        
+        min_value_usd = None
+        if 'min_value_usd' in request.query:
+            min_value_usd = float(request.query['min_value_usd'])
+            
+        trades = await service.database.get_large_trades(
+            exchange=exchange,
+            symbol=symbol,
+            hours=hours,
+            min_value_usd=min_value_usd,
+            only_liquidations=only_liquidations,
+            limit=limit
+        )
+        
+        # Calculate summary stats
+        total_value = sum(t['value_usd'] for t in trades)
+        liquidation_count = sum(1 for t in trades if t['is_liquidation'])
+        
+        return web.json_response({
+            'success': True,
+            'data': {
+                'count': len(trades),
+                'trades': trades,
+                'summary': {
+                    'total_value_usd': total_value,
+                    'liquidation_count': liquidation_count,
+                    'exchanges': list(set(t['exchange'] for t in trades)),
+                    'symbols': list(set(t['symbol'] for t in trades))
+                }
+            },
+            'filters': {
+                'exchange': exchange,
+                'symbol': symbol,
+                'hours': hours,
+                'min_value_usd': min_value_usd,
+                'only_liquidations': only_liquidations,
+                'limit': limit
+            },
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except ValueError as e:
+        return web.json_response({
+            'success': False,
+            'error': f'Invalid parameter value: {str(e)}'
+        }, status=400)
+    except Exception as e:
+        logger.error("Error getting large trades", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def api_v1_get_funding_rates(request):
+    """
+    GET /api/v1/exchange/funding-rates
+    
+    Get funding rates for perpetual futures across exchanges.
+    
+    Query Parameters:
+        - exchange (str, optional): Filter by exchange
+        - symbol (str, optional): Filter by symbol
+        - hours (int, default=24): Hours of history
+        - limit (int, default=100): Maximum results
+    
+    Returns:
+        JSON response with funding rates
+    """
+    service = request.app['service']
+    
+    try:
+        exchange = request.query.get('exchange')
+        symbol = request.query.get('symbol')
+        hours = int(request.query.get('hours', 24))
+        limit = int(request.query.get('limit', 100))
+        
+        rates = await service.database.get_funding_rates(
+            exchange=exchange,
+            symbol=symbol,
+            hours=hours,
+            limit=limit
+        )
+        
+        # Calculate average rates
+        avg_rate = sum(r['rate'] for r in rates) / len(rates) if rates else 0
+        
+        return web.json_response({
+            'success': True,
+            'data': {
+                'count': len(rates),
+                'funding_rates': rates,
+                'summary': {
+                    'average_rate': avg_rate,
+                    'average_rate_percent': avg_rate * 100,
+                    'exchanges': list(set(r['exchange'] for r in rates)),
+                    'symbols': list(set(r['symbol'] for r in rates))
+                }
+            },
+            'filters': {
+                'exchange': exchange,
+                'symbol': symbol,
+                'hours': hours,
+                'limit': limit
+            },
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except ValueError as e:
+        return web.json_response({
+            'success': False,
+            'error': f'Invalid parameter value: {str(e)}'
+        }, status=400)
+    except Exception as e:
+        logger.error("Error getting funding rates", error=str(e))
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+async def api_v1_get_open_interest(request):
+    """
+    GET /api/v1/exchange/open-interest
+    
+    Get open interest data for derivatives across exchanges.
+    
+    Query Parameters:
+        - exchange (str, optional): Filter by exchange
+        - symbol (str, optional): Filter by symbol
+        - hours (int, default=24): Hours of history
+        - limit (int, default=100): Maximum results
+    
+    Returns:
+        JSON response with open interest data
+    """
+    service = request.app['service']
+    
+    try:
+        exchange = request.query.get('exchange')
+        symbol = request.query.get('symbol')
+        hours = int(request.query.get('hours', 24))
+        limit = int(request.query.get('limit', 100))
+        
+        oi_data = await service.database.get_open_interest(
+            exchange=exchange,
+            symbol=symbol,
+            hours=hours,
+            limit=limit
+        )
+        
+        # Calculate total OI
+        total_oi_usd = sum(oi['open_interest_usd'] for oi in oi_data)
+        
+        return web.json_response({
+            'success': True,
+            'data': {
+                'count': len(oi_data),
+                'open_interest': oi_data,
+                'summary': {
+                    'total_oi_usd': total_oi_usd,
+                    'exchanges': list(set(oi['exchange'] for oi in oi_data)),
+                    'symbols': list(set(oi['symbol'] for oi in oi_data))
+                }
+            },
+            'filters': {
+                'exchange': exchange,
+                'symbol': symbol,
+                'hours': hours,
+                'limit': limit
+            },
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+        
+    except ValueError as e:
+        return web.json_response({
+            'success': False,
+            'error': f'Invalid parameter value: {str(e)}'
+        }, status=400)
+    except Exception as e:
+        logger.error("Error getting open interest", error=str(e))
         return web.json_response({
             'success': False,
             'error': str(e)
@@ -3793,6 +4368,22 @@ async def create_health_server():
     app.router.add_get('/api/v1/onchain/whale-transactions', api_v1_whale_transactions)
     app.router.add_get('/api/v1/onchain/metrics/{symbol}', api_v1_onchain_metrics_by_symbol)
     app.router.add_get('/api/v1/onchain/wallet/{address}', api_v1_wallet_info)
+    
+    # Enhanced REST API v1 - DeFi Protocol Metrics Endpoints
+    app.router.add_post('/api/v1/defi/collect', api_v1_collect_defi_metrics)
+    app.router.add_get('/api/v1/defi/metrics', api_v1_get_defi_metrics)
+    
+    # Enhanced REST API v1 - Whale Clustering Endpoints
+    app.router.add_post('/api/v1/onchain/whale-clustering/batch', api_v1_whale_clustering_batch)
+    app.router.add_get('/api/v1/onchain/wallet-clusters', api_v1_get_wallet_clusters)
+    app.router.add_get('/api/v1/onchain/wallet-cluster/address/{address}', api_v1_get_cluster_by_address)
+    app.router.add_get('/api/v1/onchain/wallet-label/{address}', api_v1_get_wallet_label)
+    app.router.add_get('/api/v1/onchain/wallet-network', api_v1_get_wallet_network)
+    
+    # Enhanced REST API v1 - Exchange Data Endpoints
+    app.router.add_get('/api/v1/exchange/large-trades', api_v1_get_large_trades)
+    app.router.add_get('/api/v1/exchange/funding-rates', api_v1_get_funding_rates)
+    app.router.add_get('/api/v1/exchange/open-interest', api_v1_get_open_interest)
     
     # Enhanced REST API v1 - Social Sentiment Endpoints
     app.router.add_get('/api/v1/social/sentiment/{symbol}', api_v1_social_sentiment_by_symbol)

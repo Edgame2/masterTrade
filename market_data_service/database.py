@@ -274,6 +274,23 @@ class Database:
                 ON wallet_labels ((data->>'category'))
             """,
             """
+            CREATE TABLE IF NOT EXISTS wallet_clusters (
+                id TEXT PRIMARY KEY,
+                partition_key TEXT NOT NULL,
+                data JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_wallet_clusters_address
+                ON wallet_clusters USING gin ((data->'addresses'))
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_wallet_clusters_category
+                ON wallet_clusters ((data->>'category'))
+            """,
+            """
             CREATE TABLE IF NOT EXISTS collector_health (
                 id TEXT PRIMARY KEY,
                 partition_key TEXT NOT NULL,
@@ -1402,6 +1419,125 @@ class Database:
             logger.error("Error storing on-chain metrics", error=str(e))
             return False
 
+    async def store_defi_protocol_metrics(self, metrics: Dict[str, Any]) -> bool:
+        """
+        Store DeFi protocol metrics (TVL, volume, fees, etc.)
+        
+        Args:
+            metrics: Dictionary containing protocol metrics
+                Required fields: protocol, category, timestamp
+                Optional: tvl_usd, volume_24h_usd, fees_24h_usd, etc.
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            protocol = metrics.get("protocol")
+            timestamp = metrics.get("timestamp")
+            
+            if not protocol or not timestamp:
+                logger.error("Missing required fields for DeFi metrics")
+                return False
+                
+            # Parse timestamp if string
+            if isinstance(timestamp, str):
+                from datetime import datetime
+                timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                
+            metric_id = f"defi_{protocol}_{int(timestamp.timestamp())}"
+            partition_key = metrics.get("category", "defi")
+            
+            document = serialize_datetime_fields(metrics)
+            payload = json.dumps(document)
+            
+            await self._postgres.execute(
+                """
+                INSERT INTO defi_protocol_metrics (id, partition_key, data, created_at, updated_at)
+                VALUES ($1, $2, $3::jsonb, NOW(), NOW())
+                ON CONFLICT (id)
+                DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
+                """,
+                metric_id,
+                partition_key,
+                payload,
+            )
+            
+            logger.debug(
+                "Stored DeFi protocol metrics",
+                protocol=protocol,
+                tvl_usd=metrics.get("tvl_usd", 0)
+            )
+            return True
+            
+        except Exception as e:
+            logger.error("Error storing DeFi protocol metrics", error=str(e), protocol=metrics.get("protocol"))
+            return False
+
+    async def get_defi_protocol_metrics(
+        self, 
+        protocol: Optional[str] = None,
+        category: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve DeFi protocol metrics
+        
+        Args:
+            protocol: Optional protocol name filter
+            category: Optional category filter (dex, lending, etc.)
+            start_time: Optional start time filter
+            end_time: Optional end time filter
+            limit: Maximum number of results
+            
+        Returns:
+            List of DeFi metrics dictionaries
+        """
+        try:
+            conditions = []
+            params = []
+            param_count = 1
+            
+            if protocol:
+                conditions.append(f"data->>'protocol' = ${param_count}")
+                params.append(protocol)
+                param_count += 1
+                
+            if category:
+                conditions.append(f"partition_key = ${param_count}")
+                params.append(category)
+                param_count += 1
+                
+            if start_time:
+                conditions.append(f"created_at >= ${param_count}")
+                params.append(start_time)
+                param_count += 1
+                
+            if end_time:
+                conditions.append(f"created_at <= ${param_count}")
+                params.append(end_time)
+                param_count += 1
+                
+            where_clause = " AND ".join(conditions) if conditions else "TRUE"
+            
+            query = f"""
+                SELECT data
+                FROM defi_protocol_metrics
+                WHERE {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ${param_count}
+            """
+            params.append(limit)
+            
+            rows = await self._postgres.fetch(query, *params)
+            
+            return [dict(row['data']) for row in rows]
+            
+        except Exception as e:
+            logger.error("Error fetching DeFi protocol metrics", error=str(e))
+            return []
+
     async def store_wallet_label(self, address: str, label: str, category: str, metadata: Dict = None) -> bool:
         """
         Store wallet label/categorization
@@ -1600,6 +1736,167 @@ class Database:
             LIMIT $2
         """
         return await self._fetch_data(query, category, limit)
+
+    async def store_wallet_cluster(self, cluster_data: Dict[str, Any]) -> bool:
+        """
+        Store wallet cluster data.
+        
+        Args:
+            cluster_data: Cluster data dictionary
+            
+        Returns:
+            True if stored successfully
+        """
+        cluster_id = cluster_data.get("cluster_id")
+        if not cluster_id:
+            return False
+            
+        partition_key = f"cluster#{cluster_id[:4]}"
+        
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO wallet_clusters (id, partition_key, data, created_at, updated_at)
+                VALUES ($1, $2, $3, NOW(), NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    data = EXCLUDED.data,
+                    updated_at = NOW()
+                """,
+                cluster_id,
+                partition_key,
+                json.dumps(cluster_data)
+            )
+        return True
+
+    async def get_cluster_by_address(self, address: str) -> Optional[Dict[str, Any]]:
+        """
+        Get cluster containing a specific address.
+        
+        Args:
+            address: Wallet address
+            
+        Returns:
+            Cluster data or None
+        """
+        query = """
+            SELECT data
+            FROM wallet_clusters
+            WHERE data->'addresses' ? $1
+            LIMIT 1
+        """
+        return await self._fetch_one_data(query, address.lower())
+
+    async def update_cluster_metrics(self, cluster_id: str, transaction_amount: float) -> bool:
+        """
+        Update cluster metrics with new transaction.
+        
+        Args:
+            cluster_id: Cluster ID
+            transaction_amount: Transaction amount in USD
+            
+        Returns:
+            True if updated successfully
+        """
+        async with self.pool.acquire() as conn:
+            result = await conn.fetchrow(
+                "SELECT data FROM wallet_clusters WHERE id = $1",
+                cluster_id
+            )
+            
+            if not result:
+                return False
+                
+            cluster_data = json.loads(result['data'])
+            
+            # Update metrics
+            cluster_data['transaction_count'] = cluster_data.get('transaction_count', 0) + 1
+            cluster_data['total_volume_usd'] = cluster_data.get('total_volume_usd', 0) + transaction_amount
+            cluster_data['average_volume_usd'] = (
+                cluster_data['total_volume_usd'] / cluster_data['transaction_count']
+            )
+            cluster_data['last_seen'] = datetime.utcnow().isoformat()
+            
+            await conn.execute(
+                """
+                UPDATE wallet_clusters
+                SET data = $1, updated_at = NOW()
+                WHERE id = $2
+                """,
+                json.dumps(cluster_data),
+                cluster_id
+            )
+            
+        return True
+
+    async def add_address_to_cluster(self, cluster_id: str, address: str) -> bool:
+        """
+        Add an address to an existing cluster.
+        
+        Args:
+            cluster_id: Cluster ID
+            address: Address to add
+            
+        Returns:
+            True if added successfully
+        """
+        async with self.pool.acquire() as conn:
+            result = await conn.fetchrow(
+                "SELECT data FROM wallet_clusters WHERE id = $1",
+                cluster_id
+            )
+            
+            if not result:
+                return False
+                
+            cluster_data = json.loads(result['data'])
+            
+            # Add address if not already present
+            addresses = set(cluster_data.get('addresses', []))
+            if address.lower() not in addresses:
+                addresses.add(address.lower())
+                cluster_data['addresses'] = list(addresses)
+                cluster_data['address_count'] = len(addresses)
+                
+                await conn.execute(
+                    """
+                    UPDATE wallet_clusters
+                    SET data = $1, updated_at = NOW()
+                    WHERE id = $2
+                    """,
+                    json.dumps(cluster_data),
+                    cluster_id
+                )
+                
+        return True
+
+    async def get_all_clusters(self, limit: int = 100, category: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get all wallet clusters.
+        
+        Args:
+            limit: Maximum number of clusters
+            category: Optional category filter
+            
+        Returns:
+            List of cluster data
+        """
+        if category:
+            query = """
+                SELECT data
+                FROM wallet_clusters
+                WHERE data->>'category' = $1
+                ORDER BY updated_at DESC
+                LIMIT $2
+            """
+            return await self._fetch_data(query, category, limit)
+        else:
+            query = """
+                SELECT data
+                FROM wallet_clusters
+                ORDER BY updated_at DESC
+                LIMIT $1
+            """
+            return await self._fetch_data(query, limit)
 
     async def log_collector_health(
         self,
@@ -1991,6 +2288,499 @@ class Database:
             
         except Exception as e:
             logger.error("Error getting trending topics", error=str(e))
+            return []
+
+    # ==========================================
+    # Exchange Data Collection Methods
+    # ==========================================
+
+    async def store_exchange_orderbook(
+        self,
+        exchange: str,
+        symbol: str,
+        bids: List[List[str]],
+        asks: List[List[str]],
+        timestamp: datetime,
+        sequence: int = None,
+        metadata: Dict = None
+    ) -> bool:
+        """
+        Store order book snapshot from exchange
+        
+        Args:
+            exchange: Exchange name (binance, coinbase, deribit, cme)
+            symbol: Trading pair/instrument symbol
+            bids: List of [price, size] bid levels
+            asks: List of [price, size] ask levels
+            timestamp: Order book timestamp
+            sequence: Optional sequence number from exchange
+            metadata: Optional additional metadata
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Generate unique ID
+            orderbook_id = f"{exchange}_{symbol}_{timestamp.isoformat()}"
+            
+            # Convert lists to JSONB
+            bids_json = json.dumps(bids)
+            asks_json = json.dumps(asks)
+            metadata_json = json.dumps(metadata) if metadata else None
+            
+            await self._postgres.execute(
+                """
+                INSERT INTO exchange_orderbooks (
+                    id, exchange, symbol, bids, asks, timestamp, sequence, metadata, created_at
+                )
+                VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8::jsonb, NOW())
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    bids = EXCLUDED.bids,
+                    asks = EXCLUDED.asks,
+                    sequence = EXCLUDED.sequence,
+                    metadata = EXCLUDED.metadata
+                """,
+                orderbook_id, exchange, symbol, bids_json, asks_json, 
+                timestamp, sequence, metadata_json
+            )
+            
+            logger.debug(
+                "Stored exchange orderbook",
+                exchange=exchange,
+                symbol=symbol,
+                bid_levels=len(bids),
+                ask_levels=len(asks)
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(
+                "Error storing exchange orderbook",
+                exchange=exchange,
+                symbol=symbol,
+                error=str(e)
+            )
+            return False
+            
+    async def store_large_trade(
+        self,
+        exchange: str,
+        symbol: str,
+        side: str,
+        price: float,
+        size: float,
+        value_usd: float,
+        timestamp: datetime,
+        trade_id: str,
+        is_liquidation: bool = False,
+        metadata: Dict = None
+    ) -> bool:
+        """
+        Store large trade detection
+        
+        Args:
+            exchange: Exchange name
+            symbol: Trading pair/instrument
+            side: 'buy' or 'sell'
+            price: Trade price
+            size: Trade size in base currency
+            value_usd: Trade value in USD
+            timestamp: Trade timestamp
+            trade_id: Exchange trade ID
+            is_liquidation: True if forced liquidation
+            metadata: Optional additional data
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Generate unique ID
+            large_trade_id = f"{exchange}_{symbol}_{trade_id}"
+            
+            metadata_json = json.dumps(metadata) if metadata else None
+            
+            await self._postgres.execute(
+                """
+                INSERT INTO large_trades (
+                    id, exchange, symbol, side, price, size, value_usd,
+                    timestamp, trade_id, is_liquidation, metadata, created_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, NOW())
+                ON CONFLICT (id) DO NOTHING
+                """,
+                large_trade_id, exchange, symbol, side, price, size, value_usd,
+                timestamp, trade_id, is_liquidation, metadata_json
+            )
+            
+            logger.info(
+                "Large trade detected",
+                exchange=exchange,
+                symbol=symbol,
+                side=side,
+                value_usd=value_usd,
+                is_liquidation=is_liquidation
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(
+                "Error storing large trade",
+                exchange=exchange,
+                symbol=symbol,
+                error=str(e)
+            )
+            return False
+            
+    async def store_funding_rate(
+        self,
+        exchange: str,
+        symbol: str,
+        rate: float,
+        timestamp: datetime,
+        predicted_rate: float = None,
+        next_funding_time: datetime = None,
+        metadata: Dict = None
+    ) -> bool:
+        """
+        Store funding rate for perpetual contract
+        
+        Args:
+            exchange: Exchange name
+            symbol: Perpetual contract symbol
+            rate: Current funding rate (decimal)
+            timestamp: Data timestamp
+            predicted_rate: Optional predicted next rate
+            next_funding_time: Optional next funding time
+            metadata: Optional additional data
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Generate unique ID
+            funding_id = f"{exchange}_{symbol}_{timestamp.isoformat()}"
+            
+            metadata_json = json.dumps(metadata) if metadata else None
+            
+            await self._postgres.execute(
+                """
+                INSERT INTO funding_rates (
+                    id, exchange, symbol, rate, predicted_rate, timestamp,
+                    next_funding_time, metadata, created_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NOW())
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    rate = EXCLUDED.rate,
+                    predicted_rate = EXCLUDED.predicted_rate,
+                    next_funding_time = EXCLUDED.next_funding_time,
+                    metadata = EXCLUDED.metadata
+                """,
+                funding_id, exchange, symbol, rate, predicted_rate,
+                timestamp, next_funding_time, metadata_json
+            )
+            
+            logger.debug(
+                "Stored funding rate",
+                exchange=exchange,
+                symbol=symbol,
+                rate=rate
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(
+                "Error storing funding rate",
+                exchange=exchange,
+                symbol=symbol,
+                error=str(e)
+            )
+            return False
+            
+    async def store_open_interest(
+        self,
+        exchange: str,
+        symbol: str,
+        open_interest: float,
+        open_interest_usd: float,
+        timestamp: datetime,
+        metadata: Dict = None
+    ) -> bool:
+        """
+        Store open interest for derivatives
+        
+        Args:
+            exchange: Exchange name
+            symbol: Contract symbol
+            open_interest: OI in number of contracts
+            open_interest_usd: OI value in USD
+            timestamp: Data timestamp
+            metadata: Optional additional data
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Generate unique ID
+            oi_id = f"{exchange}_{symbol}_{timestamp.isoformat()}"
+            
+            metadata_json = json.dumps(metadata) if metadata else None
+            
+            await self._postgres.execute(
+                """
+                INSERT INTO open_interest (
+                    id, exchange, symbol, open_interest, open_interest_usd,
+                    timestamp, metadata, created_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW())
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    open_interest = EXCLUDED.open_interest,
+                    open_interest_usd = EXCLUDED.open_interest_usd,
+                    metadata = EXCLUDED.metadata
+                """,
+                oi_id, exchange, symbol, open_interest, open_interest_usd,
+                timestamp, metadata_json
+            )
+            
+            logger.debug(
+                "Stored open interest",
+                exchange=exchange,
+                symbol=symbol,
+                oi_usd=open_interest_usd
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(
+                "Error storing open interest",
+                exchange=exchange,
+                symbol=symbol,
+                error=str(e)
+            )
+            return False
+            
+    async def get_large_trades(
+        self,
+        exchange: str = None,
+        symbol: str = None,
+        hours: int = 24,
+        min_value_usd: float = None,
+        only_liquidations: bool = False,
+        limit: int = 100
+    ) -> List[Dict]:
+        """
+        Get large trades with optional filters
+        
+        Args:
+            exchange: Filter by exchange (optional)
+            symbol: Filter by symbol (optional)
+            hours: Hours of history
+            min_value_usd: Minimum USD value filter
+            only_liquidations: Only return liquidations
+            limit: Maximum results
+            
+        Returns:
+            List of large trade dicts
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            
+            # Build query dynamically based on filters
+            conditions = ["timestamp >= $1"]
+            params = [cutoff]
+            param_idx = 2
+            
+            if exchange:
+                conditions.append(f"exchange = ${param_idx}")
+                params.append(exchange)
+                param_idx += 1
+                
+            if symbol:
+                conditions.append(f"symbol = ${param_idx}")
+                params.append(symbol)
+                param_idx += 1
+                
+            if min_value_usd:
+                conditions.append(f"value_usd >= ${param_idx}")
+                params.append(min_value_usd)
+                param_idx += 1
+                
+            if only_liquidations:
+                conditions.append("is_liquidation = TRUE")
+                
+            where_clause = " AND ".join(conditions)
+            params.append(limit)
+            
+            query = f"""
+                SELECT 
+                    exchange, symbol, side, price, size, value_usd,
+                    timestamp, trade_id, is_liquidation, metadata
+                FROM large_trades
+                WHERE {where_clause}
+                ORDER BY timestamp DESC
+                LIMIT ${param_idx}
+            """
+            
+            rows = await self._postgres.fetch(query, *params)
+            
+            trades = []
+            for row in rows:
+                trades.append({
+                    "exchange": row["exchange"],
+                    "symbol": row["symbol"],
+                    "side": row["side"],
+                    "price": float(row["price"]),
+                    "size": float(row["size"]),
+                    "value_usd": float(row["value_usd"]),
+                    "timestamp": row["timestamp"].isoformat(),
+                    "trade_id": row["trade_id"],
+                    "is_liquidation": row["is_liquidation"],
+                    "metadata": row["metadata"]
+                })
+                
+            return trades
+            
+        except Exception as e:
+            logger.error("Error getting large trades", error=str(e))
+            return []
+            
+    async def get_funding_rates(
+        self,
+        exchange: str = None,
+        symbol: str = None,
+        hours: int = 24,
+        limit: int = 100
+    ) -> List[Dict]:
+        """
+        Get funding rates with optional filters
+        
+        Args:
+            exchange: Filter by exchange
+            symbol: Filter by symbol
+            hours: Hours of history
+            limit: Maximum results
+            
+        Returns:
+            List of funding rate dicts
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            
+            conditions = ["timestamp >= $1"]
+            params = [cutoff]
+            param_idx = 2
+            
+            if exchange:
+                conditions.append(f"exchange = ${param_idx}")
+                params.append(exchange)
+                param_idx += 1
+                
+            if symbol:
+                conditions.append(f"symbol = ${param_idx}")
+                params.append(symbol)
+                param_idx += 1
+                
+            where_clause = " AND ".join(conditions)
+            params.append(limit)
+            
+            query = f"""
+                SELECT 
+                    exchange, symbol, rate, predicted_rate, timestamp,
+                    next_funding_time, metadata
+                FROM funding_rates
+                WHERE {where_clause}
+                ORDER BY timestamp DESC
+                LIMIT ${param_idx}
+            """
+            
+            rows = await self._postgres.fetch(query, *params)
+            
+            rates = []
+            for row in rows:
+                rates.append({
+                    "exchange": row["exchange"],
+                    "symbol": row["symbol"],
+                    "rate": float(row["rate"]),
+                    "predicted_rate": float(row["predicted_rate"]) if row["predicted_rate"] else None,
+                    "timestamp": row["timestamp"].isoformat(),
+                    "next_funding_time": row["next_funding_time"].isoformat() if row["next_funding_time"] else None,
+                    "metadata": row["metadata"]
+                })
+                
+            return rates
+            
+        except Exception as e:
+            logger.error("Error getting funding rates", error=str(e))
+            return []
+            
+    async def get_open_interest(
+        self,
+        exchange: str = None,
+        symbol: str = None,
+        hours: int = 24,
+        limit: int = 100
+    ) -> List[Dict]:
+        """
+        Get open interest with optional filters
+        
+        Args:
+            exchange: Filter by exchange
+            symbol: Filter by symbol
+            hours: Hours of history
+            limit: Maximum results
+            
+        Returns:
+            List of open interest dicts
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            
+            conditions = ["timestamp >= $1"]
+            params = [cutoff]
+            param_idx = 2
+            
+            if exchange:
+                conditions.append(f"exchange = ${param_idx}")
+                params.append(exchange)
+                param_idx += 1
+                
+            if symbol:
+                conditions.append(f"symbol = ${param_idx}")
+                params.append(symbol)
+                param_idx += 1
+                
+            where_clause = " AND ".join(conditions)
+            params.append(limit)
+            
+            query = f"""
+                SELECT 
+                    exchange, symbol, open_interest, open_interest_usd,
+                    timestamp, metadata
+                FROM open_interest
+                WHERE {where_clause}
+                ORDER BY timestamp DESC
+                LIMIT ${param_idx}
+            """
+            
+            rows = await self._postgres.fetch(query, *params)
+            
+            oi_data = []
+            for row in rows:
+                oi_data.append({
+                    "exchange": row["exchange"],
+                    "symbol": row["symbol"],
+                    "open_interest": float(row["open_interest"]),
+                    "open_interest_usd": float(row["open_interest_usd"]),
+                    "timestamp": row["timestamp"].isoformat(),
+                    "metadata": row["metadata"]
+                })
+                
+            return oi_data
+            
+        except Exception as e:
+            logger.error("Error getting open interest", error=str(e))
             return []
 
     # ==========================================

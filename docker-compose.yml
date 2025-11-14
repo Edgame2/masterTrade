@@ -20,6 +20,37 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # TimescaleDB for Time-Series Data
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: mastertrade_timescaledb
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mastertrade}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mastertrade}
+      POSTGRES_DB: ${TIMESCALEDB_NAME:-mastertrade_timeseries}
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      - ./database/timescaledb_setup.sql:/docker-entrypoint-initdb.d/001_setup.sql:ro
+    networks:
+      - mastertrade_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mastertrade"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    command:
+      - "postgres"
+      - "-cshared_preload_libraries=timescaledb"
+      - "-cmax_connections=200"
+      - "-cshared_buffers=512MB"
+      - "-ceffective_cache_size=2GB"
+      - "-cmaintenance_work_mem=256MB"
+      - "-cwal_buffers=16MB"
+      - "-cdefault_statistics_target=100"
+
   # Message Queue
   rabbitmq:
     image: rabbitmq:3.12-management
@@ -413,6 +444,7 @@ services:
 
 volumes:
   postgres_data:
+  timescaledb_data:
   rabbitmq_data:
   prometheus_data:
   grafana_data:

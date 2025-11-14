@@ -468,21 +468,12 @@ async def update_symbol(symbol: str, updates: dict):
 # Strategy Generation API Proxy Endpoints
 # ====================================================================
 
-@app.post("/api/strategies/generate")
-async def generate_strategies(request: dict):
-    """
-    Generate new trading strategies (proxied to strategy service)
-    
-    Request body:
-    {
-        "num_strategies": 100,  // Number of strategies to generate
-        "config": {}  // Optional configuration
-    }
-    """
+async def _generate_strategies_impl(request: dict):
+    """Implementation for strategy generation (shared by both endpoints)"""
     try:
         import httpx
         
-        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8003")
+        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8006")
         
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
@@ -504,13 +495,39 @@ async def generate_strategies(request: dict):
         logger.error("Error generating strategies", error=str(e))
         raise HTTPException(status_code=500, detail="Internal server error")
 
+@app.post("/api/strategies/generate")
+async def generate_strategies(request: dict):
+    """
+    Generate new trading strategies (proxied to strategy service)
+    
+    Request body:
+    {
+        "num_strategies": 100,  // Number of strategies to generate
+        "config": {}  // Optional configuration
+    }
+    """
+    return await _generate_strategies_impl(request)
+
+@app.post("/api/v1/strategies/generate")
+async def generate_strategies_v1(request: dict):
+    """
+    Generate new trading strategies - v1 API (proxied to strategy service)
+    
+    Request body:
+    {
+        "num_strategies": 100,  // Number of strategies to generate
+        "config": {}  // Optional configuration
+    }
+    """
+    return await _generate_strategies_impl(request)
+
 @app.get("/api/strategies/jobs/{job_id}/progress")
 async def get_generation_progress(job_id: str):
     """Get progress of strategy generation job (proxied to strategy service)"""
     try:
         import httpx
         
-        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8003")
+        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8006")
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
@@ -542,7 +559,7 @@ async def get_generation_results(job_id: str):
     try:
         import httpx
         
-        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8003")
+        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8006")
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
@@ -578,7 +595,7 @@ async def list_generation_jobs(
     try:
         import httpx
         
-        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8003")
+        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8006")
         
         params = {"limit": limit}
         if status_filter:
@@ -605,7 +622,7 @@ async def cancel_generation_job(job_id: str):
     try:
         import httpx
         
-        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8003")
+        strategy_service_url = os.getenv("STRATEGY_SERVICE_URL", "http://strategy_service:8006")
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.delete(

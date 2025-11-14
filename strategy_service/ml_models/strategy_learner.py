@@ -86,7 +86,8 @@ class StrategyGenome:
         self.exit_conditions = self._random_exit()
         self.risk_params = self._random_risk()
         self.timeframe = random.choice(['5m', '15m', '1h', '4h'])
-        self.symbols = random.sample(['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT'], k=random.randint(1, 2))
+        # Use USDC pairs to match what's in the database
+        self.symbols = random.sample(['BTCUSDC', 'ETHUSDC', 'BNBUSDC', 'ADAUSDC', 'SOLUSDC', 'AVAXUSDC'], k=random.randint(1, 2))
         self.sentiment_profile = self._random_sentiment_profile()
         self.regime_preferences = self._random_regime_preferences()
     

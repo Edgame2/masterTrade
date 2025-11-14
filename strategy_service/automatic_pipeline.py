@@ -207,7 +207,8 @@ class AutomaticStrategyPipeline:
         """
         import pandas as pd
         
-        symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
+        # Use USDC pairs since that's what's in the database
+        symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC', 'ADAUSDC']
         historical_data = {}
         
         for symbol in symbols:
@@ -266,6 +267,20 @@ class AutomaticStrategyPipeline:
                                        historical_data: Dict) -> Dict:
         """Backtest a single strategy"""
         try:
+            # Ensure strategy is a dict (fix for JSON serialization issues)
+            if isinstance(strategy, str):
+                import json
+                try:
+                    strategy = json.loads(strategy)
+                    logger.warning(f"Strategy was a string, parsed to dict: {strategy.get('id')}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse strategy string: {e}")
+                    return None
+            
+            if not isinstance(strategy, dict):
+                logger.error(f"Strategy is not a dict: {type(strategy)}")
+                return None
+            
             # Get data for strategy's symbols
             symbol = strategy.get('symbols', ['BTCUSDT'])[0]
             data = historical_data.get(symbol)

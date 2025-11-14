@@ -13,7 +13,8 @@ import {
   FiBell,
   FiUsers,
   FiChevronLeft,
-  FiChevronRight
+  FiChevronRight,
+  FiPieChart
 } from 'react-icons/fi';
 import { useState } from 'react';
 
@@ -42,6 +43,7 @@ export default function Sidebar({ activeTab, onTabChange }: SidebarProps) {
     { id: 'crypto', label: 'Crypto Manager', icon: FiDollarSign },
     { id: 'datasources', label: 'Data Sources', icon: FiDatabase },
     { id: 'goals', label: 'Financial Goals', icon: FiTarget },
+    { id: 'alpha', label: 'Alpha Attribution', icon: FiPieChart },
     { id: 'alerts', label: 'Alerts & Notifications', icon: FiBell },
     { id: 'users', label: 'User Management', icon: FiUsers },
   ];

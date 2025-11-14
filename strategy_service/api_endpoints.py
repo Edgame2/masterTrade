@@ -129,6 +129,30 @@ def create_strategy_api(strategy_service) -> FastAPI:
             "timestamp": datetime.now(timezone.utc),
             "daily_reviewer_active": strategy_service.daily_reviewer is not None
         }
+    
+    @app.get("/strategies")
+    async def list_strategies():
+        """List all strategies"""
+        try:
+            db = strategy_service.db
+            if not db:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Database not available"
+                )
+            
+            strategies = await db.get_all_strategies()
+            return {
+                "strategies": strategies,
+                "total": len(strategies),
+                "timestamp": datetime.now(timezone.utc)
+            }
+        except Exception as e:
+            logger.error(f"Error listing strategies: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to retrieve strategies: {str(e)}"
+            )
 
     @app.get(
         "/api/v1/predictions/{symbol}",

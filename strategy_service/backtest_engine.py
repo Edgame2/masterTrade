@@ -705,6 +705,19 @@ class BacktestEngine:
         global_sentiment: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Backtest a single strategy"""
+        # Ensure strategy is a dict (handle JSON serialization issues)
+        if isinstance(strategy, str):
+            import json
+            try:
+                strategy = json.loads(strategy)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse strategy string: {e}")
+                return self.create_failed_result({"id": "unknown"}, f"Invalid strategy format: {str(e)}")
+        
+        if not isinstance(strategy, dict):
+            logger.error(f"Strategy must be a dict, got: {type(strategy)}")
+            return self.create_failed_result({"id": "unknown"}, f"Strategy type error: {type(strategy)}")
+        
         symbol = strategy["symbols"][0] if strategy["symbols"] else "BTCUSDT"
         timeframe = strategy.get("timeframe", "1h")
         
