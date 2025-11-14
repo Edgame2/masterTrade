@@ -3,8 +3,20 @@
 import { signIn } from 'next-auth/react';
 import { FiMail } from 'react-icons/fi';
 import { FcGoogle } from 'react-icons/fc';
+import { useState } from 'react';
 
 export default function SignIn() {
+  const [devUsername, setDevUsername] = useState('admin');
+  const showDevMode = process.env.NEXT_PUBLIC_DEV_MODE === 'true';
+
+  const handleDevLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await signIn('dev-credentials', { 
+      username: devUsername,
+      callbackUrl: '/' 
+    });
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800">
       <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl p-8 max-w-md w-full">
@@ -18,6 +30,29 @@ export default function SignIn() {
         </div>
 
         <div className="space-y-4">
+          {showDevMode && (
+            <form onSubmit={handleDevLogin} className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Dev Username
+                </label>
+                <input
+                  type="text"
+                  value={devUsername}
+                  onChange={(e) => setDevUsername(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Enter any username"
+                />
+              </div>
+              <button
+                type="submit"
+                className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition shadow-sm font-medium"
+              >
+                Sign in (Dev Mode)
+              </button>
+            </form>
+          )}
+
           <button
             onClick={() => signIn('google', { callbackUrl: '/' })}
             className="w-full flex items-center justify-center space-x-3 px-6 py-3 bg-white border-2 border-gray-300 rounded-lg hover:bg-gray-50 transition shadow-sm"
@@ -44,3 +79,4 @@ export default function SignIn() {
     </div>
   );
 }
+

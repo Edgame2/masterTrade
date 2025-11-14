@@ -86,10 +86,21 @@ class StrategyGenerationManager:
     Manages strategy generation jobs with progress tracking
     """
     
-    def __init__(self, database, strategy_generator, backtest_engine, broadcast_callback=None):
+    def __init__(self, database, strategy_generator, backtest_engine=None, broadcast_callback=None):
         self.database = database
         self.strategy_generator = strategy_generator
-        self.backtest_engine = backtest_engine
+        # Initialize backtest engine if not provided
+        if backtest_engine is None:
+            try:
+                from backtest_engine import BacktestEngine
+                self.backtest_engine = BacktestEngine(initial_capital=100000.0)
+                logger.info("BacktestEngine initialized for strategy generation")
+            except Exception as e:
+                logger.error(f"Failed to initialize BacktestEngine: {e}")
+                self.backtest_engine = None
+        else:
+            self.backtest_engine = backtest_engine
+            logger.info("Using provided BacktestEngine instance")
         self.broadcast_callback = broadcast_callback  # Optional callback for real-time updates
         self.active_jobs: Dict[str, GenerationProgress] = {}
         self.job_results: Dict[str, List[BacktestSummary]] = {}
@@ -420,39 +431,70 @@ class StrategyGenerationManager:
     async def _save_strategy_to_db(self, strategy: Dict[str, Any]):
         """Save generated strategy to database"""
         try:
+            # Store all strategy details in parameters and metadata JSONB columns
+            # to match existing database schema
+            import json
+            now = datetime.now(timezone.utc)
+            
+            # Generate a proper UUID for the strategy if the ID is not a valid UUID
+            strategy_id_input = strategy.get('id', str(uuid.uuid4()))
+            try:
+                # Try to parse as UUID
+                strategy_id = str(uuid.UUID(strategy_id_input))
+            except (ValueError, AttributeError):
+                # If not a valid UUID, generate a new one and store original in metadata
+                strategy_id = str(uuid.uuid4())
+                logger.info(f"Generated new UUID {strategy_id} for strategy with original ID {strategy_id_input}")
+            
+            # Consolidate all strategy data into parameters and metadata
+            parameters_data = {
+                **strategy.get('parameters', {}),
+                'indicators': strategy.get('indicators', []),
+                'entry_conditions': strategy.get('entry_conditions', []),
+                'exit_conditions': strategy.get('exit_conditions', []),
+                'position_sizing': strategy.get('position_sizing', {}),
+                'risk_management': strategy.get('risk_management', {}),
+                'symbols': strategy.get('symbols', []),
+                'timeframe': strategy.get('timeframe', '1h')
+            }
+            
+            metadata_data = {
+                'backtest_results': strategy.get('backtest_results', {}),
+                'generation_config': strategy.get('config', {}),
+                'generated_at': now.isoformat(),
+                'original_id': strategy_id_input  # Store original ID for reference
+            }
+            
             query = """
                 INSERT INTO strategies (
-                    id, name, type, parameters, indicators, entry_conditions,
-                    exit_conditions, position_sizing, risk_management, status,
+                    id, name, type, parameters, metadata, status,
                     created_at, updated_at
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+                    $1, $2, $3, $4, $5, $6, $7, $8
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     name = EXCLUDED.name,
                     parameters = EXCLUDED.parameters,
+                    metadata = EXCLUDED.metadata,
                     updated_at = EXCLUDED.updated_at
             """
             
-            import json
-            now = datetime.now(timezone.utc)
-            
             await self.database.execute(
                 query,
-                strategy.get('id', str(uuid.uuid4())),
+                strategy_id,
                 strategy.get('name', 'Generated Strategy'),
                 strategy.get('type', 'generated'),
-                json.dumps(strategy.get('parameters', {})),
-                json.dumps(strategy.get('indicators', [])),
-                json.dumps(strategy.get('entry_conditions', [])),
-                json.dumps(strategy.get('exit_conditions', [])),
-                json.dumps(strategy.get('position_sizing', {})),
-                json.dumps(strategy.get('risk_management', {})),
+                json.dumps(parameters_data),
+                json.dumps(metadata_data),
                 'paper_trading',  # Start in paper trading mode
                 now,
                 now
             )
-            logger.info(f"Saved strategy {strategy.get('id')} to database")
+            logger.info(f"Saved strategy {strategy_id} to database")
+            
+            # Update the strategy dict with the UUID for return
+            strategy['id'] = strategy_id
+            
         except Exception as e:
             logger.error(f"Failed to save strategy to database: {e}")
     
@@ -485,80 +527,113 @@ class StrategyGenerationManager:
         
         Uses historical market data and realistic execution simulation
         """
-        if not self.backtest_engine:
-            logger.warning("No backtest engine available, using simulated results")
-            return await self._simulate_backtest_results(strategy)
-        
         try:
-            # Import required modules
-            from backtesting.backtest_engine import BacktestConfig, BacktestEngine
             from datetime import timedelta
-            import pandas as pd
             
             # Define backtest period (last 90 days)
             end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=90)
             
-            # Create backtest configuration
-            config = BacktestConfig(
-                start_date=start_date,
-                end_date=end_date,
-                initial_capital=100000.0,
-                maker_fee=0.0002,
-                taker_fee=0.0004,
-                max_position_size=0.95,
-                max_leverage=3.0,
-                allow_short=True
-            )
-            
-            # Initialize backtest engine
-            engine = BacktestEngine(config)
-            
             # Fetch historical market data
-            market_data = await self._fetch_market_data(
-                symbol=strategy.get('symbol', 'BTCUSDC'),
+            # NOTE: Database has USDC pairs, not USDT
+            symbol = strategy.get('symbols', ['BTCUSDC'])[0] if strategy.get('symbols') else 'BTCUSDC'
+            timeframe = strategy.get('timeframe', '1h')
+            
+            # Fetch OHLCV data
+            market_data = await self._fetch_market_data_for_backtest(
+                symbol=symbol,
+                timeframe=timeframe,
                 start_date=start_date,
                 end_date=end_date
             )
             
             if market_data is None or len(market_data) < 100:
-                logger.warning(f"Insufficient market data for strategy {strategy.get('id')}, using simulation")
+                logger.warning(f"Insufficient market data for strategy {strategy.get('id')}: got {len(market_data) if market_data else 0} records, need 100. Symbol: {symbol}, Timeframe: {timeframe}")
                 return await self._simulate_backtest_results(strategy)
             
-            # Generate strategy signals from the strategy rules
-            signals = await self._generate_strategy_signals(strategy, market_data)
+            # Fetch sentiment data for enhanced backtesting
+            symbol_sentiment = []
+            global_sentiment = []
             
-            # Run backtest
-            result = engine.run(
-                data=market_data,
-                strategy_signals=signals,
-                strategy_name=strategy.get('name', 'Unknown'),
-                strategy_params=strategy.get('parameters', {})
+            try:
+                hours_back = 90 * 24
+                symbol_sentiment = await self.database.get_sentiment_entries(
+                    symbol=symbol,
+                    hours_back=hours_back,
+                    limit=5000
+                )
+            except Exception as e:
+                logger.warning(f"Failed to fetch symbol sentiment: {e}")
+            
+            try:
+                hours_back = 90 * 24
+                global_sentiment = await self.database.get_sentiment_entries(
+                    sentiment_types=['global_crypto_sentiment', 'global_market_sentiment', 'fear_greed_index'],
+                    hours_back=hours_back,
+                    limit=5000
+                )
+            except Exception as e:
+                logger.warning(f"Failed to fetch global sentiment: {e}")
+            
+            # Run backtest using the BacktestEngine
+            logger.info(f"Running backtest for strategy {strategy.get('name', 'Unknown')} on {symbol}")
+            result = await self.backtest_engine.run_backtest(
+                strategy=strategy,
+                historical_data=market_data,
+                symbol_sentiment=symbol_sentiment,
+                global_sentiment=global_sentiment
             )
             
             # Extract metrics from backtest result
-            metrics = result.get_metrics()
+            metrics = result.get('metrics', {})
+            trades = result.get('trades', [])
+            equity_curve = result.get('equity_curve', [])
             
-            # Calculate monthly returns
-            monthly_returns = self._calculate_monthly_returns(result.equity_curve)
+            # Calculate monthly returns from equity curve
+            monthly_returns = self._calculate_monthly_returns_from_equity(equity_curve)
             avg_monthly = sum(monthly_returns) / len(monthly_returns) if monthly_returns else 0.0
             
+            # Extract key metrics with safe defaults
+            win_rate = metrics.get('win_rate', 0.0)
+            sharpe_ratio = metrics.get('sharpe_ratio', 0.0)
+            max_drawdown = metrics.get('max_drawdown_pct', 0.0)
+            total_return = metrics.get('total_return_pct', 0.0)
+            cagr = metrics.get('cagr', 0.0)
+            profit_factor = metrics.get('profit_factor', 1.0)
+            total_trades = len(trades)
+            
             # Determine if strategy passed criteria
-            passed = self._evaluate_strategy_criteria(metrics)
+            passed = self._evaluate_strategy_criteria({
+                'win_rate': win_rate,
+                'sharpe_ratio': sharpe_ratio,
+                'max_drawdown': max_drawdown,
+                'total_return': total_return,
+                'total_trades': total_trades,
+                'profit_factor': profit_factor
+            })
             
             # Save backtest results to database
             await self._save_backtest_results(strategy['id'], metrics, passed)
             
+            logger.info(
+                f"Backtest completed for {strategy.get('name')}",
+                win_rate=win_rate,
+                sharpe=sharpe_ratio,
+                total_return=total_return,
+                trades=total_trades,
+                passed=passed
+            )
+            
             return BacktestSummary(
                 strategy_id=strategy["id"],
                 strategy_name=strategy.get("name", "Unknown"),
-                win_rate=metrics.get('win_rate', 0.0),
-                sharpe_ratio=metrics.get('sharpe_ratio', 0.0),
-                max_drawdown=metrics.get('max_drawdown', 0.0),
-                total_return=metrics.get('total_return', 0.0),
-                cagr=metrics.get('cagr', 0.0),
-                profit_factor=metrics.get('profit_factor', 1.0),
-                total_trades=metrics.get('total_trades', 0),
+                win_rate=win_rate,
+                sharpe_ratio=sharpe_ratio,
+                max_drawdown=max_drawdown,
+                total_return=total_return,
+                cagr=cagr,
+                profit_factor=profit_factor,
+                total_trades=total_trades,
                 avg_monthly_return=avg_monthly,
                 monthly_returns=monthly_returns,
                 passed_criteria=passed,
@@ -570,13 +645,73 @@ class StrategyGenerationManager:
             logger.error(f"Backtest failed for strategy {strategy.get('id')}: {e}", exc_info=True)
             return await self._simulate_backtest_results(strategy)
     
+    async def _fetch_market_data_for_backtest(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_date: datetime,
+        end_date: datetime
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Fetch historical market data in format expected by BacktestEngine"""
+        try:
+            # Query historical OHLCV data from JSONB data column
+            # The market_data table stores everything in a 'data' JSONB column
+            query = """
+                SELECT 
+                    data->>'timestamp' as timestamp,
+                    (data->>'open_price')::numeric as open,
+                    (data->>'high_price')::numeric as high,
+                    (data->>'low_price')::numeric as low,
+                    (data->>'close_price')::numeric as close,
+                    (data->>'volume')::numeric as volume
+                FROM market_data
+                WHERE data->>'symbol' = $1
+                    AND data->>'interval' = $2
+                    AND (data->>'timestamp')::timestamptz >= $3
+                    AND (data->>'timestamp')::timestamptz <= $4
+                ORDER BY (data->>'timestamp')::timestamptz ASC
+            """
+            
+            # Pass datetime objects directly - asyncpg handles the conversion
+            rows = await self.database.fetch(query, symbol, timeframe, start_date, end_date)
+            
+            logger.info(f"Fetched {len(rows) if rows else 0} rows for {symbol} {timeframe} from {start_date} to {end_date}")
+            
+            if not rows:
+                logger.warning(f"No market data found for {symbol} {timeframe}")
+                return None
+            
+            # Convert to list of dicts
+            data = []
+            for row in rows:
+                try:
+                    data.append({
+                        'timestamp': row['timestamp'],
+                        'open': float(row['open']),
+                        'high': float(row['high']),
+                        'low': float(row['low']),
+                        'close': float(row['close']),
+                        'volume': float(row['volume'])
+                    })
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Skipping invalid row: {e}")
+                    continue
+            
+            if data:
+                logger.info(f"Fetched {len(data)} candles for {symbol} {timeframe}")
+            return data if data else None
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch market data for backtest: {e}")
+            return None
+    
     async def _fetch_market_data(
         self,
         symbol: str,
         start_date: datetime,
         end_date: datetime
     ) -> Optional[pd.DataFrame]:
-        """Fetch historical market data for backtesting"""
+        """Fetch historical market data for backtesting (pandas format - legacy)"""
         try:
             import pandas as pd
             
@@ -711,6 +846,45 @@ class StrategyGenerationManager:
             logger.error(f"Failed to evaluate conditions: {e}")
         
         return result
+    
+    def _calculate_monthly_returns_from_equity(self, equity_curve: List[Dict]) -> List[float]:
+        """Calculate monthly returns from BacktestEngine equity curve format"""
+        if not equity_curve:
+            return []
+        
+        try:
+            import pandas as pd
+            from datetime import datetime
+            
+            # Convert to DataFrame - equity_curve is list of dicts with 'timestamp' and 'equity'
+            data = []
+            for point in equity_curve:
+                if isinstance(point, dict):
+                    data.append({
+                        'timestamp': point.get('timestamp') or point.get('datetime'),
+                        'equity': point.get('equity', 0.0)
+                    })
+                elif isinstance(point, (list, tuple)) and len(point) >= 2:
+                    data.append({'timestamp': point[0], 'equity': point[1]})
+            
+            if not data:
+                return []
+            
+            df = pd.DataFrame(data)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df.set_index('timestamp', inplace=True)
+            
+            # Resample to monthly and get last value of each month
+            monthly = df['equity'].resample('M').last()
+            
+            # Calculate monthly percentage returns
+            returns = monthly.pct_change().dropna() * 100  # Convert to percentage
+            
+            return returns.tolist()
+            
+        except Exception as e:
+            logger.error(f"Failed to calculate monthly returns from equity: {e}")
+            return []
     
     def _calculate_monthly_returns(self, equity_curve: List[Tuple]) -> List[float]:
         """Calculate monthly returns from equity curve"""

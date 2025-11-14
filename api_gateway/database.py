@@ -30,6 +30,11 @@ class Database:
         )
         self._connected = False
 
+    @property
+    def pool(self):
+        """Access to the underlying connection pool for direct queries."""
+        return self._postgres.pool
+
     async def connect(self) -> None:
         if self._connected:
             return

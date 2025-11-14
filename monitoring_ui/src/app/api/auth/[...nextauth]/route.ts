@@ -1,5 +1,6 @@
 import NextAuth, { NextAuthOptions } from 'next-auth';
 import GoogleProvider from 'next-auth/providers/google';
+import CredentialsProvider from 'next-auth/providers/credentials';
 
 const authOptions: NextAuthOptions = {
   providers: [
@@ -7,6 +8,27 @@ const authOptions: NextAuthOptions = {
       clientId: process.env.GOOGLE_CLIENT_ID || '',
       clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
     }),
+    // Dev/Testing bypass - only enable if DEV_MODE is true
+    ...(process.env.DEV_MODE === 'true' ? [
+      CredentialsProvider({
+        id: 'dev-credentials',
+        name: 'Dev Login',
+        credentials: {
+          username: { label: 'Username', type: 'text', placeholder: 'dev' },
+        },
+        async authorize(credentials) {
+          // Simple dev bypass - accept any username
+          if (credentials?.username) {
+            return {
+              id: 'dev-user-001',
+              email: `${credentials.username}@dev.local`,
+              name: credentials.username,
+            };
+          }
+          return null;
+        },
+      }),
+    ] : []),
   ],
   callbacks: {
     async signIn({ user, account, profile }) {

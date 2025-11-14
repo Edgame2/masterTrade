@@ -11,6 +11,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+import aiohttp
 import structlog
 import socketio
 from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Request
@@ -300,6 +301,61 @@ async def get_recent_signals(limit: int = 100):
         return signals
     except Exception as e:
         logger.error("Error getting recent signals", error=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/market-data/summary")
+async def get_market_data_summary():
+    """Get market data coverage summary across all symbols and intervals"""
+    try:
+        logger.info("Fetching market data summary")
+        async with database.pool.acquire() as conn:
+            query = """
+                SELECT 
+                    data->>'symbol' as symbol,
+                    data->>'interval' as interval,
+                    MIN(data->>'timestamp') as first_timestamp,
+                    MAX(data->>'timestamp') as last_timestamp,
+                    COUNT(*) as record_count
+                FROM market_data
+                WHERE data->>'symbol' IS NOT NULL 
+                  AND data->>'interval' IS NOT NULL
+                GROUP BY data->>'symbol', data->>'interval'
+                ORDER BY data->>'symbol', data->>'interval'
+            """
+            rows = await conn.fetch(query)
+            logger.info("Query executed", row_count=len(rows))
+            
+            summary = []
+            for row in rows:
+                summary.append({
+                    "symbol": row["symbol"],
+                    "interval": row["interval"],
+                    "first_timestamp": row["first_timestamp"],
+                    "last_timestamp": row["last_timestamp"],
+                    "record_count": row["record_count"]
+                })
+            
+            logger.info("Returning summary", summary_count=len(summary))
+            return {"summary": summary}
+    except Exception as e:
+        logger.error("Error getting market data summary", error=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/collectors")
+async def get_collectors_status():
+    """Get market data collectors status"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("http://mastertrade_market_data:8000/collectors") as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    raise HTTPException(status_code=response.status, detail="Failed to fetch collectors status")
+    except aiohttp.ClientError as e:
+        logger.error("Error connecting to market data service", error=str(e))
+        raise HTTPException(status_code=503, detail="Market data service unavailable")
+    except Exception as e:
+        logger.error("Error getting collectors status", error=str(e))
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/api/market-data/{symbol}")

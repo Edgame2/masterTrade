@@ -57,6 +57,25 @@ class Database:
         logger.info("Strategy service PostgreSQL connection closed")
 
     # ------------------------------------------------------------------
+    # Generic database operations (proxies to PostgresManager)
+    # ------------------------------------------------------------------
+    async def execute(self, query: str, *args) -> str:
+        """Execute a query and return the status string"""
+        return await self._postgres.execute(query, *args)
+    
+    async def fetch(self, query: str, *args) -> List[asyncpg.Record]:
+        """Fetch multiple rows"""
+        return await self._postgres.fetch(query, *args)
+    
+    async def fetchrow(self, query: str, *args) -> Optional[asyncpg.Record]:
+        """Fetch a single row"""
+        return await self._postgres.fetchrow(query, *args)
+    
+    async def fetchval(self, query: str, *args) -> Any:
+        """Fetch a single value"""
+        return await self._postgres.fetchval(query, *args)
+
+    # ------------------------------------------------------------------
     # Strategy helpers
     # ------------------------------------------------------------------
     @staticmethod

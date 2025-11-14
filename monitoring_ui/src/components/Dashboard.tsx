@@ -11,6 +11,7 @@ import LivePositions from './LivePositions';
 import CryptoManager from './CryptoManager';
 import StrategyGenerator from './StrategyGenerator';
 import DataSourcesView from './DataSourcesView';
+import MarketDataView from './MarketDataView';
 import GoalProgressView from './GoalProgressView';
 import SystemHealthView from './SystemHealthView';
 import StrategyManagementView from './StrategyManagementView';
@@ -21,7 +22,7 @@ import { useWebSocket } from '@/hooks/useWebSocket';
 
 export default function Dashboard() {
   const { data: session } = useSession();
-  const [activeTab, setActiveTab] = useState<'overview' | 'strategies' | 'generator' | 'positions' | 'performance' | 'crypto' | 'datasources' | 'goals' | 'alpha' | 'strategy-mgmt' | 'alerts' | 'users'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'strategies' | 'generator' | 'positions' | 'performance' | 'crypto' | 'datasources' | 'marketdata' | 'goals' | 'alpha' | 'strategy-mgmt' | 'alerts' | 'users'>('overview');
   const [stats, setStats] = useState({
     totalPnL: 0,
     totalValue: 0,
@@ -184,6 +185,7 @@ export default function Dashboard() {
             {activeTab === 'performance' && <PerformanceChart detailed />}
             {activeTab === 'crypto' && <CryptoManager />}
             {activeTab === 'datasources' && <DataSourcesView />}
+            {activeTab === 'marketdata' && <MarketDataView />}
             {activeTab === 'goals' && <GoalProgressView />}
             {activeTab === 'alpha' && <AlphaAttributionView />}
             {activeTab === 'strategy-mgmt' && <StrategyManagementView />}

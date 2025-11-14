@@ -1,25 +1,7 @@
 services:
-  # PostgreSQL Database
-  postgres:
-    image: postgres:15
-    container_name: mastertrade_postgres
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-mastertrade}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mastertrade}
-      POSTGRES_DB: ${POSTGRES_DB:-mastertrade}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - mastertrade_network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mastertrade"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
+  # NOTE: PostgreSQL runs on host machine, not in container
+  # Services connect via host.docker.internal
+  
   # TimescaleDB for Time-Series Data
   timescaledb:
     image: timescale/timescaledb:latest-pg15
@@ -81,7 +63,7 @@ services:
     container_name: mastertrade_market_data
     environment:
       # PostgreSQL Configuration (connecting to host machine)
-      - POSTGRES_HOST=postgres
+      - POSTGRES_HOST=192.168.1.15
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-mastertrade}
       - POSTGRES_USER=${POSTGRES_USER:-mastertrade}
@@ -117,7 +99,7 @@ services:
     command: ["python", "data_access_api.py"]
     environment:
       # PostgreSQL Configuration (connecting to host machine)
-      - POSTGRES_HOST=postgres
+      - POSTGRES_HOST=192.168.1.15
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-mastertrade}
       - POSTGRES_USER=${POSTGRES_USER:-mastertrade}
@@ -147,7 +129,7 @@ services:
       dockerfile: alert_system/Dockerfile
     container_name: mastertrade_alert_system
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-mastertrade}:${POSTGRES_PASSWORD:-mastertrade}@host.docker.internal:5432/${POSTGRES_DB:-mastertrade}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-mastertrade}:${POSTGRES_PASSWORD:-mastertrade}@192.168.1.15:5432/${POSTGRES_DB:-mastertrade}
       - LOG_LEVEL=INFO
       # Notification channels (optional - configure in .env)
       - SMTP_HOST=${SMTP_HOST:-}
@@ -185,7 +167,7 @@ services:
     container_name: mastertrade_strategy
     environment:
       # PostgreSQL Configuration (connecting to host machine)
-      - POSTGRES_HOST=postgres
+      - POSTGRES_HOST=192.168.1.15
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-mastertrade}
       - POSTGRES_USER=${POSTGRES_USER:-mastertrade}
@@ -217,7 +199,7 @@ services:
     container_name: mastertrade_order_executor
     environment:
       # PostgreSQL Configuration (connecting to host machine)
-      - POSTGRES_HOST=postgres
+      - POSTGRES_HOST=192.168.1.15
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-mastertrade}
       - POSTGRES_USER=${POSTGRES_USER:-mastertrade}
@@ -250,7 +232,7 @@ services:
     container_name: mastertrade_risk_manager
     environment:
       # PostgreSQL Configuration (connecting to host machine)
-      - POSTGRES_HOST=postgres
+      - POSTGRES_HOST=192.168.1.15
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-mastertrade}
       - POSTGRES_USER=${POSTGRES_USER:-mastertrade}
@@ -277,15 +259,21 @@ services:
   monitoring_ui:
     build:
       context: ./monitoring_ui
+      args:
+        - NEXT_PUBLIC_API_URL=http://localhost:8080
+        - NEXT_PUBLIC_WS_URL=ws://localhost:8080
+        - NEXT_PUBLIC_DEV_MODE=true
       
     container_name: mastertrade_monitoring_ui
     environment:
-      - REACT_APP_API_URL=http://localhost:8080
-      - REACT_APP_WS_URL=ws://localhost:8080/ws
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
+      - NEXT_PUBLIC_WS_URL=ws://localhost:8080
+      - NEXT_PUBLIC_DEV_MODE=true
       - NEXTAUTH_URL=http://localhost:3000
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-changeme-generate-with-openssl-rand-base64-32}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - DEV_MODE=true
     ports:
       - "3000:3000"
     depends_on:
@@ -330,7 +318,7 @@ services:
     container_name: mastertrade_api_gateway
     environment:
       # PostgreSQL Configuration (connecting to host machine)
-      - POSTGRES_HOST=postgres
+      - POSTGRES_HOST=192.168.1.15
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-mastertrade}
       - POSTGRES_USER=${POSTGRES_USER:-mastertrade}
@@ -397,10 +385,9 @@ services:
       - "6379:6379"  # Exposed for external access and testing
     volumes:
       - redis_data:/data
-      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
     networks:
       - mastertrade_network
-    command: redis-server /usr/local/etc/redis/redis.conf
+    command: redis-server --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -408,42 +395,7 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # PgBouncer - PostgreSQL Connection Pooler
-  pgbouncer:
-    image: pgbouncer/pgbouncer:latest
-    container_name: mastertrade_pgbouncer
-    environment:
-      - DATABASES_HOST=postgres
-      - DATABASES_PORT=5432
-      - DATABASES_USER=${POSTGRES_USER:-mastertrade}
-      - DATABASES_PASSWORD=${POSTGRES_PASSWORD:-mastertrade}
-      - DATABASES_DBNAME=${POSTGRES_DB:-mastertrade}
-      - PGBOUNCER_AUTH_TYPE=trust
-      - PGBOUNCER_POOL_MODE=transaction
-      - PGBOUNCER_MAX_CLIENT_CONN=100
-      - PGBOUNCER_DEFAULT_POOL_SIZE=20
-      - PGBOUNCER_MIN_POOL_SIZE=5
-      - PGBOUNCER_RESERVE_POOL_SIZE=5
-      - PGBOUNCER_MAX_DB_CONNECTIONS=50
-      - PGBOUNCER_MAX_USER_CONNECTIONS=50
-      - PGBOUNCER_LOG_CONNECTIONS=1
-      - PGBOUNCER_LOG_DISCONNECTIONS=1
-    ports:
-      - "6432:5432"  # PgBouncer exposed on 6432
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - mastertrade_network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "PGPASSWORD=${POSTGRES_PASSWORD:-mastertrade} psql -h localhost -U ${POSTGRES_USER:-mastertrade} -p 5432 -d pgbouncer -c 'SHOW POOLS;' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
 volumes:
-  postgres_data:
   timescaledb_data:
   rabbitmq_data:
   prometheus_data:
